@@ -1,6 +1,8 @@
 # Adds `wslc compose ...` to PowerShell by wrapping the real wslc.exe.
 # install.ps1 dot-sources this file from $PROFILE automatically; to do it by hand:
-#   . "$env:LOCALAPPDATA\Programs\wslc-compose\wslc-compose.ps1"
+#   . "$env:LOCALAPPDATA\Programs\wslc-compose\wslc-compose.profile.ps1"
+# The file name must not be plain wslc-compose.ps1: PowerShell prefers .ps1 over
+# .exe for the same command name, which would shadow wslc-compose.exe.
 # Every other wslc subcommand is forwarded unchanged.
 
 $script:RealWslc = (Get-Command wslc.exe -CommandType Application -ErrorAction SilentlyContinue |

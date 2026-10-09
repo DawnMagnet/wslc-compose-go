@@ -17,7 +17,20 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go test -count=1 ./...
+      # UPX packs the windows-amd64 and linux-amd64 binaries (see Makefile `compress`).
+      # Pinned to an upstream release so the output is reproducible across runner images.
+      - name: Install UPX
+        env:
+          UPX_VERSION: '5.2.1'
+        run: |
+          curl -fsSL "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_linux.tar.xz" | tar -xJ -C /tmp
+          sudo install -m 0755 "/tmp/upx-${UPX_VERSION}-amd64_linux/upx" /usr/local/bin/upx
+          upx --version | head -1
       - run: make dist VERSION=${{ github.ref_name }}
+      - name: Smoke-test packed binary
+        run: |
+          ./dist/wslc-compose-linux-amd64 version --short
+          ls -l dist
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}

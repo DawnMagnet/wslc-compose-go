@@ -9,7 +9,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/app.Commit=$(COMMIT) \
 	-X $(PKG)/internal/app.Date=$(DATE)
 
-.PHONY: all build windows linux dist test race cover golden lint fmt tidy install clean
+.PHONY: all build windows linux compress dist test race cover golden lint fmt tidy install clean
 
 all: lint test build
 
@@ -24,8 +24,22 @@ linux: ## Cross-compile Linux binaries for use inside WSL distros
 	GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '$(LDFLAGS)' -o dist/$(BINARY)-linux-amd64 ./cmd/wslc-compose
 	GOOS=linux GOARCH=arm64 go build -trimpath -ldflags '$(LDFLAGS)' -o dist/$(BINARY)-linux-arm64 ./cmd/wslc-compose
 
-dist: clean windows linux ## Release assets: all binaries + wrapper scripts + checksums.txt
-	cp scripts/install.ps1 scripts/wslc-compose.ps1 scripts/wslc-compose.sh scripts/wslc.cmd dist/
+# UPX shrinks the release binaries to roughly 30% of their size (they unpack
+# in memory at start-up, which costs a few milliseconds). Only targets that are
+# smoke-tested on real hardware are packed; the arm64 builds stay uncompressed.
+# Install UPX from https://github.com/upx/upx/releases (or `apt install upx-ucl`);
+# when it is missing, `compress` is skipped with a warning. Disable with `make dist UPX=`.
+UPX         ?= upx
+UPX_FLAGS   ?= --best --lzma -q
+UPX_TARGETS ?= dist/$(BINARY)-windows-amd64.exe dist/$(BINARY)-linux-amd64
+
+compress: ## Pack UPX_TARGETS with UPX and verify each packed file
+	@if [ -z "$(UPX)" ] || ! command -v $(UPX) >/dev/null 2>&1; then \
+		echo "warning: UPX not found, release binaries left uncompressed" >&2; exit 0; fi; \
+	for f in $(UPX_TARGETS); do $(UPX) $(UPX_FLAGS) "$$f" && $(UPX) -t -q "$$f" || exit 1; done
+
+dist: clean windows linux compress ## Release assets: binaries (UPX-packed) + scripts + checksums.txt
+	cp scripts/install.ps1 scripts/wslc-compose.profile.ps1 scripts/wslc-compose.sh scripts/wslc.cmd dist/
 	cd dist && sha256sum * > checksums.txt
 
 test: ## Run unit and golden tests

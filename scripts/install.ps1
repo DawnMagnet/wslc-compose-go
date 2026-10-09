@@ -6,7 +6,9 @@
     Downloads wslc-compose-windows-<arch>.exe for the requested release, verifies its
     SHA-256 against checksums.txt, installs it as wslc-compose.exe, adds the install
     directory to the user PATH and (unless -NoProfile) dot-sources the bundled
-    wslc-compose.ps1 wrapper from $PROFILE so that `wslc compose ...` works.
+    wslc-compose.profile.ps1 from $PROFILE so that `wslc compose ...` also works in
+    PowerShell. The wrapper deliberately does not end in plain 'wslc-compose.ps1':
+    PowerShell resolves .ps1 before .exe, which would shadow wslc-compose.exe.
     Re-running upgrades in place; -Uninstall reverses everything.
 
 .EXAMPLE
@@ -14,7 +16,7 @@
 
 .EXAMPLE
     # With parameters (irm | iex cannot pass them):
-    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/DawnMagnet/wslc-compose-go/main/scripts/install.ps1))) -Version v0.1.0 -InstallDir D:\tools\wslc-compose
+    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/DawnMagnet/wslc-compose-go/main/scripts/install.ps1))) -Version v0.1.1 -InstallDir D:\tools\wslc-compose
 
 .NOTES
     For `irm | iex`, the parameters can also be given as environment variables:
@@ -22,7 +24,7 @@
 #>
 [CmdletBinding()]
 param(
-    # Release tag such as v0.1.0; "latest" (default) picks the newest release.
+    # Release tag such as v0.1.1; "latest" (default) picks the newest release.
     [string]$Version = $(if ($env:WSLC_COMPOSE_VERSION) { $env:WSLC_COMPOSE_VERSION } else { 'latest' }),
     # Installation directory (user-writable; added to the user PATH).
     [string]$InstallDir = $(if ($env:WSLC_COMPOSE_INSTALL_DIR) { $env:WSLC_COMPOSE_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\wslc-compose' }),
@@ -49,7 +51,9 @@ param(
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
     $Exe = Join-Path $InstallDir 'wslc-compose.exe'
-    $Wrapper = Join-Path $InstallDir 'wslc-compose.ps1'
+    $Wrapper = Join-Path $InstallDir 'wslc-compose.profile.ps1'
+    # v0.1.0 installed the wrapper as wslc-compose.ps1, which shadowed the exe.
+    $LegacyWrapper = Join-Path $InstallDir 'wslc-compose.ps1'
     $ProfileLine = ". `"$Wrapper`" # wslc-compose"
 
     function Write-Step([string]$Message) { Write-Host "==> $Message" -ForegroundColor Cyan }
@@ -111,7 +115,7 @@ param(
     try {
         Get-File "$root/$asset" (Join-Path $tmp $asset)
         Get-File "$root/checksums.txt" (Join-Path $tmp 'checksums.txt')
-        Get-File "$root/wslc-compose.ps1" (Join-Path $tmp 'wslc-compose.ps1')
+        Get-File "$root/wslc-compose.profile.ps1" (Join-Path $tmp 'wslc-compose.profile.ps1')
 
         Write-Step 'Verifying SHA-256'
         $want = (Get-Content (Join-Path $tmp 'checksums.txt') | Where-Object { $_ -match "\s\*?$([regex]::Escape($asset))$" } |
@@ -123,7 +127,8 @@ param(
         Write-Step "Installing to $InstallDir"
         New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
         Move-Item -Force -LiteralPath (Join-Path $tmp $asset) -Destination $Exe
-        Move-Item -Force -LiteralPath (Join-Path $tmp 'wslc-compose.ps1') -Destination $Wrapper
+        Move-Item -Force -LiteralPath (Join-Path $tmp 'wslc-compose.profile.ps1') -Destination $Wrapper
+        Remove-Item -LiteralPath $LegacyWrapper -Force -ErrorAction SilentlyContinue
     } catch {
         if ($_.Exception -is [System.IO.IOException] -and (Test-Path -LiteralPath $Exe)) {
             throw "cannot replace $Exe (is wslc-compose still running?): $($_.Exception.Message)"
@@ -148,5 +153,7 @@ param(
     if (-not (Get-Command wslc.exe -ErrorAction SilentlyContinue)) {
         Write-Warning 'wslc.exe not found on PATH. WSL 2.9.3+ (WSL Containers) is required: wsl --update'
     }
-    Write-Host 'Open a new terminal, then try:  wslc-compose version   /   wslc compose up -d'
+    Write-Host 'Open a new terminal, then try:'
+    Write-Host '  wslc-compose version        # any shell'
+    Write-Host '  wslc compose version        # PowerShell sugar for wslc-compose'
 }

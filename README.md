@@ -4,8 +4,381 @@
 [![release](https://img.shields.io/github/v/release/DawnMagnet/wslc-compose-go)](https://github.com/DawnMagnet/wslc-compose-go/releases/latest)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
+**English** | [中文](#中文说明)
+
+> Run standard Compose files on **WSL Containers (`wslc`)**.
+> A `docker compose`-style experience for `wslc`, until Microsoft ships an official `wslc compose`.
+
+```powershell
+wslc-compose up -d        # main command (any shell)
+wslc compose up -d        # PowerShell sugar for the same thing
+```
+
+`wslc-compose` loads `compose.yaml` with the official parser,
+[compose-spec/compose-go v2](https://github.com/compose-spec/compose-go) (interpolation, multi-file merge,
+profiles, env_file and extends are all handled upstream), then translates every service into typed
+`wslc` command lines.
+
+- **No state file**: all project state lives in container labels (`com.docker.compose.*`), matching Docker Compose.
+- **Incremental updates**: driven by a config hash (`com.wslc.compose.config-hash`); unchanged containers are kept.
+- **`--dry-run` anywhere**: prints the `wslc` commands it would run, even on machines without wslc.
+- **`--strict`**: fields wslc cannot implement become errors instead of warnings.
+- **Single binary**: native Windows exe (UPX-packed, ~1.8 MB), or run inside a WSL distro and drive `wslc.exe`.
+
+> Status: preview (v0.1). Unit and golden tests cover every wslc interaction (mocked Runner). Verified on
+> Windows 11 + **wslc 3.0.1**: `up`/`up -d`/`down -v`/`ps`/`logs`/`exec`/`run`/`build`/`pull`/`--scale`,
+> healthcheck waits, anonymous volumes and **GPU (RTX 5060 Ti, CUDA)**. Please attach `--dry-run` output to issues.
+
+## Contents
+
+- [Install](#install)
+- [`wslc compose` (PowerShell sugar)](#wslc-compose-powershell-sugar)
+- [Quick start](#quick-start)
+- [Command reference](#command-reference)
+- [Compose support matrix](#compose-support-matrix)
+- [Dry-run example](#dry-run-example)
+- [Design notes](#design-notes)
+- [Known limitations](#known-limitations)
+- [Development](#development)
+
+## Install
+
+Requires Windows 11 + WSL 2.9.3 or later (ships `wslc`; upgrade with `wsl --update`).
+
+### One-line install (recommended)
+
+In PowerShell (5.1 or 7, no admin needed):
+
+```powershell
+irm https://raw.githubusercontent.com/DawnMagnet/wslc-compose-go/main/scripts/install.ps1 | iex
+```
+
+The script:
+
+1. detects amd64 / arm64, downloads `wslc-compose-windows-<arch>.exe` from
+   [GitHub Releases](https://github.com/DawnMagnet/wslc-compose-go/releases) and verifies it against `checksums.txt`;
+2. installs it to `%LOCALAPPDATA%\Programs\wslc-compose\wslc-compose.exe` (re-running upgrades in place);
+3. adds that directory to the **user** PATH;
+4. dot-sources `wslc-compose.profile.ps1` from `$PROFILE`, enabling `wslc compose ...` in PowerShell.
+
+Open a new terminal, then:
+
+```powershell
+wslc-compose version
+wslc compose version   # PowerShell only
+```
+
+With parameters (`irm | iex` cannot pass them, so use the scriptblock form):
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/DawnMagnet/wslc-compose-go/main/scripts/install.ps1))) -Version v0.1.1 -InstallDir D:\tools\wslc-compose
+```
+
+| Parameter | Env var (for `irm \| iex`) | Meaning |
+|---|---|---|
+| `-Version` | `WSLC_COMPOSE_VERSION` | Release tag, default `latest` |
+| `-InstallDir` | `WSLC_COMPOSE_INSTALL_DIR` | Install dir, default `%LOCALAPPDATA%\Programs\wslc-compose` |
+| `-BaseUrl` | `WSLC_COMPOSE_BASE_URL` | Releases root; point at a mirror or fork |
+| `-Arch` | | Force `amd64` / `arm64` |
+| `-NoPath` | | Do not modify the user PATH |
+| `-NoProfile` | | Do not modify `$PROFILE` (no `wslc compose`) |
+| `-Uninstall` | | Remove the install dir, PATH entry and `$PROFILE` line |
+
+> If the execution policy is `Restricted` (the Windows client default), `$PROFILE` is not loaded and the script
+> suggests `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. `wslc-compose` itself is unaffected.
+
+Uninstall:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/DawnMagnet/wslc-compose-go/main/scripts/install.ps1))) -Uninstall
+```
+
+### Manual download / inside a WSL distro
+
+Every release ships `wslc-compose-{windows,linux}-{amd64,arm64}`, the wrapper scripts and `checksums.txt`.
+The amd64 binaries are packed with [UPX](https://upx.github.io/); `upx -d <file>` restores the original if
+your antivirus dislikes packed executables. Inside a WSL distro:
+
+```bash
+curl -fsSLo ~/.local/bin/wslc-compose \
+  https://github.com/DawnMagnet/wslc-compose-go/releases/latest/download/wslc-compose-linux-amd64
+chmod +x ~/.local/bin/wslc-compose
+```
+
+### Build from source
+
+Requires Go 1.24+:
+
+```bash
+go install github.com/DawnMagnet/wslc-compose-go/cmd/wslc-compose@latest
+# or
+git clone https://github.com/DawnMagnet/wslc-compose-go && cd wslc-compose-go
+make build   # host platform -> bin/wslc-compose
+make dist    # all platforms + UPX + scripts + checksums.txt -> dist/  (UPX= to skip packing)
+```
+
+The `wslc` executable is located via: `--wslc` → `$WSLC_COMPOSE_BIN` → `wslc.exe` / `wslc` on `PATH`
+→ `C:\Program Files\WSL\wslc.exe` (`/mnt/c/Program Files/WSL/wslc.exe` inside WSL).
+
+**Inside a WSL distro**, when calling `wslc.exe`, bind-mount sources are converted with `wslpath -w` and
+forward slashes (`/mnt/c/src/app` → `C:/src/app`), because wslc treats backslashes as escapes.
+
+## `wslc compose` (PowerShell sugar)
+
+`wslc-compose` is the real command. `wslc` is Microsoft's binary and has no plugin mechanism, so
+`wslc compose` is provided by thin wrappers that forward `compose ...` to `wslc-compose` and every other
+subcommand unchanged to the real `wslc.exe`:
+
+| Shell | Setup |
+|---|---|
+| PowerShell | Done by `install.ps1`. Manually: add `. <install dir>\wslc-compose.profile.ps1` to `$PROFILE` |
+| bash / zsh (in WSL) | Add `source <path>/wslc-compose.sh` to `~/.bashrc` (needs the Linux `wslc-compose` on PATH) |
+| cmd.exe / batch | Put the directory holding `wslc.cmd` **before** `C:\Program Files\WSL` in PATH. The system PATH wins over the user PATH, so this needs admin; just use `wslc-compose` instead |
+
+The PowerShell wrapper is intentionally *not* called `wslc-compose.ps1`: PowerShell prefers `.ps1` over `.exe`
+for the same name, so such a file would shadow `wslc-compose.exe` (the v0.1.0 bug).
+
+```powershell
+wslc compose up -d
+wslc compose logs -f web
+wslc compose down -v
+```
+
+When an official `wslc compose` ships, drop the wrapper; labels already match Docker Compose.
+
+## Quick start
+
+```yaml
+# compose.yaml
+services:
+  web:
+    build: .
+    ports: ["8080:80"]
+    depends_on:
+      db: { condition: service_healthy }
+  db:
+    image: postgres:16-alpine
+    environment: { POSTGRES_PASSWORD: example }
+    volumes: [dbdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+volumes:
+  dbdata: {}
+```
+
+```powershell
+wslc-compose up -d --dry-run   # preview the wslc commands
+wslc-compose up -d             # networks/volumes, build, start in dependency order
+wslc-compose ps
+wslc-compose logs -f
+wslc-compose exec db psql -U postgres
+wslc-compose down -v
+```
+
+## Command reference
+
+Global flags (before or after the subcommand):
+
+| Flag | Meaning |
+|---|---|
+| `-f, --file` | Compose file, repeatable (also `COMPOSE_FILE`) |
+| `-p, --project-name` | Project name (also `COMPOSE_PROJECT_NAME`; default `name:` or directory name) |
+| `--project-directory` | Working directory |
+| `--profile` | Enable a profile, repeatable (also `COMPOSE_PROFILES`) |
+| `--env-file` | Interpolation env file (default `.env`) |
+| `--dry-run` | Print wslc commands only (commands on stdout, progress on stderr) |
+| `--strict` | Treat unsupported fields as errors |
+| `--wslc` | Path to the wslc executable |
+| `--default-dns` | DNS injected when a service has no `dns:`; default `1.1.1.1`, `--default-dns=` disables |
+| `--parallel` | Concurrency for wslc queries (default 1, see [Design notes](#design-notes)) |
+| `--ansi` | Colourised log prefixes: `auto`/`always`/`never` (honours `NO_COLOR`) |
+
+| Command | Main flags | Behaviour |
+|---|---|---|
+| `up [SERVICE...]` | `-d` `--build` `--no-build` `--pull` `--force-recreate` `--no-recreate` `--no-deps` `--remove-orphans` `--scale SVC=N` `--wait` `--wait-timeout` `-t` | Create networks/volumes → build/pull → converge containers in dependency order; attaches logs without `-d` (Ctrl+C stops). `--scale` overrides `scale`/`deploy.replicas` (repeatable, may be 0). Rolls back resources created by this run on failure |
+| `down` | `-v` `--remove-orphans` `-t` | Stop and remove containers in reverse dependency order, remove project networks; `-v` removes declared named volumes (not external ones) |
+| `ps [SERVICE...]` | `-a` `-q` `--services` `--status STATE` (repeatable, implies `-a`) `--format table\|json` | List project containers; running containers with a healthcheck get a `HEALTH` column |
+| `logs [SERVICE...]` | `-f` `-n/--tail` `-t` `--since` `--until` `--no-log-prefix` | Merged multi-container logs with `name |` prefixes |
+| `build [SERVICE...]` | `--no-cache` `--pull` | Build every service with `build:` |
+| `pull [SERVICE...]` | `--ignore-pull-failures` | Pull images (each image once) |
+| `config` | `--services` `--volumes` `--networks` `--images` `--hash "*"` `--format yaml\|json` | Print the normalised model or a projection; list modes print names only |
+| `exec SERVICE [--] CMD...` | `-i` (default on) `-t` `-T` `-d` `-u` `-w` `-e` `--index` | Run a command in a running container; TTY follows stdin; a leading `--` is stripped (same for `run`) |
+| `run SERVICE [CMD...]` | `--rm` `-d` `--name` `--no-deps` `--service-ports` `-T` `-u` `-w` `-e` `--entrypoint` `--build` | One-off container (`oneoff=True` label); dependencies are started first |
+| `start` / `stop` / `restart` | `-t` | wslc has no restart; `restart` = stop + start |
+| `version` | `--short` | Show own and wslc versions |
+
+## Compose support matrix
+
+**✅ Mapped**
+
+| Compose field | wslc flags |
+|---|---|
+| `name`, `container_name`, `deploy.replicas`/`scale` | `--name <project>-<service>-<n>` or `container_name` |
+| `image`, `build.context/dockerfile/args/target/labels/tags/no_cache/pull` | `wslc build -t … -f … --build-arg … --target … -l … --no-cache --pull` |
+| `command`, `entrypoint` | `--entrypoint <first>` + image + remaining items + command |
+| `environment`, `env_file` | `-e K=V` (env_file merged by compose-go, sorted by key) |
+| `ports` (host_ip, ranges, udp) | `-p [ip:]host:container[/udp]` |
+| `volumes` bind / named / anonymous / tmpfs (with size), `tmpfs`, read-only mounts | `-v` / `--tmpfs`; bind sources become Windows forward-slash paths. wslc rejects bare paths, so anonymous volumes (`- /data`) become project-scoped named volumes `<project>_<service>_<path>_anon` (kept across recreation, removed by `down -v`) |
+| `networks` (default `<project>_default`, `aliases`), `network_mode: none` | `--network` + `--network-alias <service>` + aliases |
+| Top-level `networks`: `driver`, `internal`, `ipam.config[0].subnet/gateway`, `driver_opts`, `labels`, `external`, `name` | `wslc network create …` |
+| Top-level `volumes`: `name`, `external`, `labels` | `wslc volume create -l com.docker.compose.project=… -l com.docker.compose.volume=…` |
+| `working_dir`, `user`, `hostname`, `domainname`, `labels` | `-w` `-u` `-h` `--domainname` `-l` |
+| `dns`, `dns_search`, `dns_opt` | `--dns` `--dns-search` `--dns-option` |
+| `mem_limit` / `deploy.resources.limits.memory`, `cpus` / `limits.cpus`, `shm_size` | `-m 512M` (upper-case units) `--cpus` `--shm-size` |
+| `ulimits`, `stop_signal`, `stop_grace_period` | `--ulimit` `--stop-signal` `--stop-timeout` |
+| `gpus`, `deploy.resources.reservations.devices[capabilities: gpu]` | `--gpus all` |
+| `tty`, `stdin_open` | `-t` `-i` |
+| `depends_on` (started / healthy / completed_successfully / required) | dependency order + polling `wslc inspect` |
+| `profiles`, `pull_policy` (always/missing/never/build) | service selection / image strategy |
+| Interpolation, `.env`, multiple `-f`, `extends`, `include` | handled natively by compose-go |
+
+**ℹ️ Mapped (verified on wslc 3.0.1)**
+
+| Field | Notes |
+|---|---|
+| `healthcheck` | `--health-cmd/--health-interval/--health-timeout/--health-start-period/--health-retries`, `--no-healthcheck`; `CMD` form is shell-quoted. `ps` reads `HealthStatus` from `wslc list` (falls back to `inspect`) |
+| `depends_on: service_healthy` | Polls `State.Health.Status` from `wslc inspect`; if wslc never reports health, after 3 polls "running" counts as healthy, with a warning |
+| `ports[].mode: host` | Published as a normal port (INFO, does not trip `--strict`) |
+
+**⚠️ Ignored with a warning** (errors under `--strict`)
+
+`restart`, `deploy.restart_policy`, `privileged`, `cap_add`/`cap_drop`, `devices`, `device_cgroup_rules`,
+`security_opt`, `sysctls`, `extra_hosts`, `secrets`, `configs`, `logging`, `platform`, `init`, `read_only`,
+`ipc`, `pid`, `uts`, `userns_mode`, `group_add`, `cgroup`/`cgroup_parent`, `runtime`, `isolation`, `mac_address`,
+`links`/`external_links`, `volumes_from`, `storage_opt`, `oom_*`, `pids_limit`, `blkio_config`,
+`cpu_shares`/`cpu_quota`/`cpuset` etc., `mem_reservation`/`memswap_limit`, `post_start`/`pre_stop`, `develop` (watch),
+`provider`, `models`, `use_api_socket`, `network_mode: host|service:|container:`,
+multiple networks (only the highest-priority one is joined), static `ipv4_address`, volume `nocopy`/`subpath`,
+npipe/image/cluster volume types,
+`build.secrets/ssh/platforms/cache_from/cache_to/additional_contexts/network/extra_hosts/dockerfile_inline`,
+`healthcheck.start_interval`, non-bridge network drivers, IPv6, volume drivers and options,
+`deploy.resources.reservations` (memory).
+
+**❌ Unsupported commands**: `watch`, `attach`, `cp`, `top`, `pause`/`unpause`, `port`, `events`, `images`,
+`scale` (use `up --scale`), `kill`, `rm`, `create`, `push`, `ls` (multi-project).
+
+## Dry-run example
+
+```console
+$ wslc-compose -f minimal.yaml --dry-run up -d
+wslc.exe network create -l com.docker.compose.network=default -l com.docker.compose.project=minimal minimal_default
+wslc.exe pull nginx:alpine
+wslc.exe run -d --name minimal-hello-1 -l com.docker.compose.container-number=1 -l com.docker.compose.oneoff=False -l com.docker.compose.project=minimal -l com.docker.compose.project.config_files=C:/src/demo/minimal.yaml -l com.docker.compose.project.working_dir=C:/src/demo -l com.docker.compose.service=hello -l com.wslc.compose.config-hash=<sha256> -l com.wslc.compose.version=dev -p 8080:80 --network minimal_default --network-alias hello --dns 1.1.1.1 nginx:alpine
+
+$ wslc-compose --dry-run down -v
+wslc.exe network remove minimal_default
+```
+
+With wslc present, dry-run **really queries** current state (list/inspect) and only skips mutations, so it
+previews exactly which containers are kept or recreated. Without wslc it assumes an empty state.
+See [`testdata/golden/`](testdata/golden); `up_full.golden` covers nearly every mapped field.
+
+## Design notes
+
+- **Project state = container labels.** Each container carries `com.docker.compose.project/service/container-number/oneoff/
+  project.working_dir/project.config_files` plus `com.wslc.compose.config-hash` and `com.wslc.compose.version`.
+  `ps`/`down` rely only on `wslc list --filter label=...`, falling back to per-container `inspect` if labels are missing.
+- **Config hash.** JSON + SHA-256 of the service config, excluding `build`, `pull_policy`, `scale`/`replicas`,
+  `depends_on` and `profiles`, so changing replica counts or dependencies does not recreate containers;
+  services rebuilt by `up --build` are always recreated. Inspect with `wslc-compose config --hash "*"`.
+- **Default DNS 1.1.1.1.** The wslc utility VM forwards DNS to the Windows host resolver; on many LAN/corporate
+  networks containers then get `SERVFAIL` for public names (apt/npm/pip fail). Services without `dns:` therefore
+  get `--dns 1.1.1.1`; for internal names set `dns:`, `--default-dns=10.0.0.53`, or disable with `--default-dns=`.
+- **Paths.** On Windows everything becomes `C:/x/y`; inside WSL `/mnt/c/...` is converted directly and other paths go
+  through `wslpath -w` (`//wsl.localhost/<distro>/...`). Relative Dockerfiles are resolved against the build context,
+  because wslc resolves `-f` relative to its own working directory.
+- **Upper-case memory units.** wslc rejects `512m` and only accepts `512M`, so all byte sizes use `K/M/G`.
+- **Serialised + retried.** The wslc preview may return `ERROR_SHARING_VIOLATION` under concurrent calls and
+  `ERROR_ALREADY_EXISTS` when recreating a just-stopped container; short commands run serially and those errors are
+  retried up to 5 times (2 s apart). `pull` also retries registry hiccups (`EOF`, timeouts, resets, 429/502/503).
+  wslc error output already streamed live is not repeated in the final error.
+- **Rollback on failure.** If `up` fails midway (pull/build/start failure, unhealthy dependency), containers,
+  networks and volumes created **by this run** are removed in reverse order; pre-existing resources are untouched.
+  Failures in the `--wait` phase are not rolled back, so logs stay inspectable.
+- **Deterministic order.** Stable topological sort (ties by name); dry-run output and golden tests are reproducible.
+
+Package layout: [docs/architecture.md](docs/architecture.md).
+
+## Known limitations
+
+- wslc lacks key Compose capabilities: restart policies, `--privileged`, `--cap-add`, `--device`, `--platform`,
+  `--network host`, secrets/configs. These fields are ignored with a warning.
+- **One network per container** (wslc run accepts a single `--network`); multi-network services need a different topology.
+- `wslc inspect` output is OCI-style rather than Docker-style and is parsed tolerantly; if your wslc version
+  renames fields, `ps` status/ports or `service_healthy` waits may degrade (with a warning).
+- Paths inside a WSL distro (not under `/mnt/<drive>`) become `//wsl.localhost/...` UNC paths, whose acceptance
+  depends on the wslc version; keep projects on a Windows drive.
+- Environment variables without a value (`environment: [TOKEN]` with nothing set on the host) are skipped, because
+  the wslc process runs on the Windows side.
+- Anonymous volumes become per-service named volumes, so replicas of a service **share** one (Docker gives each container its own).
+- wslc's `--gpus` only accepts `all`; GPU `count` / `device_ids` are treated as all GPUs.
+- `--entrypoint` overrides (`run`) are split on whitespace; quoting is not supported.
+- `scripts/wslc.cmd` does not handle complex quoted arguments; use `wslc-compose` directly.
+
+## Development
+
+```bash
+make test     # unit + golden tests (no real wslc; Runner is mocked)
+make race     # race detector
+make cover    # coverage
+make golden   # rewrite testdata/golden after an intended output change
+make lint     # gofmt + go vet
+make dist     # all binaries (amd64 UPX-packed) + scripts + checksums.txt
+```
+
+Layout:
+
+```
+cmd/wslc-compose/     entry point (signals, exit-code passthrough)
+internal/cli/         cobra commands (argument parsing only)
+internal/app/         use cases (up/down/ps/logs/exec/run/...)
+internal/project/     compose-go loading, field policy, config hash
+internal/translate/   ServiceConfig -> wslc argv (pure)
+internal/plan/        desired vs actual -> actions; dependency order (pure)
+internal/wslc/        Runner interface, typed client, dry-run, output parsing
+internal/labels/      label keys and helpers
+internal/paths/       Windows/WSL path conversion
+internal/logs/        prefixed log multiplexing
+internal/golden/      test helper (golden file comparison)
+testdata/compose/     compose files used by tests
+testdata/golden/      locked wslc command sequences
+scripts/              install.ps1 and the `wslc compose` wrappers
+.github/workflows/    ci.yml (test + build), release.yml (tag → release)
+```
+
+Adding a field mapping:
+
+1. Implement it in `internal/translate` and use the field in `testdata/compose/full.yaml`;
+2. If `internal/project/policy.go` warned about it, remove that rule;
+3. Run `make golden` and review the diff;
+4. Update the support matrix in this README (both languages).
+
+Run `make lint race` before submitting. Real `wslc --version` and `wslc <cmd> --help` output is welcome for fixing mappings.
+
+Releasing: write `docs/release-notes/vX.Y.Z.md`, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
+`release.yml` tests, cross-compiles, packs with UPX and publishes the GitHub Release (with `checksums.txt`).
+Releases are published only by CI.
+
+## License
+
+[MIT](LICENSE)
+
+---
+
+<a id="中文说明"></a>
+
+# 中文说明
+
+[English](#wslc-compose) | **中文**
+
 > 用标准 Compose 文件驱动 **WSL Containers（`wslc`）** 的 Go 实现。
 > 在微软官方 `wslc compose` 发布之前，提供 `docker compose` 风格的无缝体验。
+
+```powershell
+wslc-compose up -d        # 主命令（任意 shell）
+wslc compose up -d        # PowerShell 语法糖，等价
+```
 
 `wslc-compose` 用官方解析器 [compose-spec/compose-go v2](https://github.com/compose-spec/compose-go)
 加载 `compose.yaml`（插值、多文件合并、profiles、env_file、extends 全部由官方实现处理），
@@ -15,7 +388,7 @@
 - **增量更新**：基于配置哈希（`com.wslc.compose.config-hash`），配置不变的容器不会被重建。
 - **随时 `--dry-run`**：打印将要执行的 `wslc` 命令；即使本机没有 wslc 也能运行。
 - **`--strict`**：遇到 wslc 无法实现的字段直接报错，而不是静默忽略。
-- **单一可执行文件**：Windows 原生 exe，或在 WSL 发行版内运行并自动调用 `wslc.exe`。
+- **单一可执行文件**：Windows 原生 exe（UPX 压缩，约 1.8 MB），或在 WSL 发行版内运行并自动调用 `wslc.exe`。
 
 > 状态：预览（v0.1）。单元/golden 测试覆盖全部 wslc 交互（mock Runner）；并已在 Windows 11 +
 > **wslc 3.0.1** 真机上回归 `up`/`up -d`/`down -v`/`ps`/`logs`/`exec`/`run`/`build`/`pull`/`--scale`、
@@ -26,7 +399,7 @@
 ## 目录
 
 - [安装](#安装)
-- [让 `wslc compose` 直接可用](#让-wslc-compose-直接可用)
+- [`wslc compose`（PowerShell 语法糖）](#wslc-composepowershell-语法糖)
 - [快速开始](#快速开始)
 - [命令参考](#命令参考)
 - [Compose 字段支持矩阵](#compose-字段支持矩阵)
@@ -53,14 +426,19 @@ irm https://raw.githubusercontent.com/DawnMagnet/wslc-compose-go/main/scripts/in
    `wslc-compose-windows-<arch>.exe`，并用 `checksums.txt` 校验 SHA-256；
 2. 安装到 `%LOCALAPPDATA%\Programs\wslc-compose\wslc-compose.exe`（覆盖旧版本即为升级）；
 3. 把该目录加入**用户** PATH；
-4. 在 `$PROFILE` 中加一行 dot-source `wslc-compose.ps1`，让 `wslc compose ...` 直接可用。
+4. 在 `$PROFILE` 中加一行 dot-source `wslc-compose.profile.ps1`，让 PowerShell 里 `wslc compose ...` 直接可用。
 
-重新打开终端后即可使用 `wslc-compose` 或 `wslc compose`。
+重新打开终端后：
+
+```powershell
+wslc-compose version
+wslc compose version   # 仅 PowerShell
+```
 
 带参数安装（`irm | iex` 无法传参，用 scriptblock 形式）：
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/DawnMagnet/wslc-compose-go/main/scripts/install.ps1))) -Version v0.1.0 -InstallDir D:\tools\wslc-compose
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/DawnMagnet/wslc-compose-go/main/scripts/install.ps1))) -Version v0.1.1 -InstallDir D:\tools\wslc-compose
 ```
 
 | 参数 | 环境变量（适用于 `irm \| iex`） | 说明 |
@@ -85,6 +463,7 @@ irm https://raw.githubusercontent.com/DawnMagnet/wslc-compose-go/main/scripts/in
 ### 手动下载 / WSL 发行版内使用
 
 每个 Release 都附带 `wslc-compose-{windows,linux}-{amd64,arm64}` 二进制、包装脚本和 `checksums.txt`。
+amd64 二进制经 [UPX](https://upx.github.io/) 压缩；若杀毒软件误报，可用 `upx -d <文件>` 还原。
 在 WSL 发行版内：
 
 ```bash
@@ -102,7 +481,7 @@ go install github.com/DawnMagnet/wslc-compose-go/cmd/wslc-compose@latest
 # 或
 git clone https://github.com/DawnMagnet/wslc-compose-go && cd wslc-compose-go
 make build   # 本机平台 -> bin/wslc-compose
-make dist    # 全部平台 + 包装脚本 + checksums.txt -> dist/
+make dist    # 全部平台 + UPX 压缩 + 包装脚本 + checksums.txt -> dist/（UPX= 跳过压缩）
 ```
 
 `wslc` 可执行文件的查找顺序：`--wslc` 参数 → `$WSLC_COMPOSE_BIN` → `PATH` 中的 `wslc.exe` / `wslc`
@@ -111,17 +490,17 @@ make dist    # 全部平台 + 包装脚本 + checksums.txt -> dist/
 **在 WSL 发行版里运行时**，若调用的是 `wslc.exe`，bind mount 路径会自动经 `wslpath -w` 转换并改为正斜杠
 （`/mnt/c/src/app` → `C:/src/app`），因为 wslc 把反斜杠视为转义字符。
 
-## 让 `wslc compose` 直接可用
+## `wslc compose`（PowerShell 语法糖）
 
-`wslc` 是微软的二进制，无法注册子命令，因此提供三个轻量包装（其他子命令原样转发给真正的 `wslc.exe`）：
+主命令是 `wslc-compose`。`wslc` 是微软的二进制，无法注册子命令，因此提供三个轻量包装：`compose ...` 转给 `wslc-compose`，其他子命令原样转发给真正的 `wslc.exe`：
 
 | 环境 | 做法 |
 |---|---|
-| PowerShell | `install.ps1` 已自动完成；手动方式：在 `$PROFILE` 中加入 `. <安装目录>\wslc-compose.ps1` |
+| PowerShell | `install.ps1` 已自动完成；手动方式：在 `$PROFILE` 中加入 `. <安装目录>\wslc-compose.profile.ps1` |
 | bash / zsh（WSL 内） | 在 `~/.bashrc` 中加入 `source <path>/wslc-compose.sh`（需 PATH 中有 Linux 版 `wslc-compose`） |
 | cmd.exe / 批处理 | 把 `wslc.cmd` 所在目录放到 PATH 中 `C:\Program Files\WSL` **之前**。系统 PATH 优先于用户 PATH，因此需要管理员把它加进系统 PATH；一般直接用 `wslc-compose` 更省事 |
 
-三个脚本都在仓库 `scripts/` 下，也作为 Release 附件提供。
+三个脚本都在仓库 `scripts/` 下，也作为 Release 附件提供。PowerShell 包装刻意不叫 `wslc-compose.ps1`：同名时 PowerShell 优先 `.ps1`，会挡住 `wslc-compose.exe`（v0.1.0 的问题）。
 
 之后即可：
 
@@ -246,7 +625,6 @@ wslc-compose down -v
 
 ```console
 $ wslc-compose -f minimal.yaml --dry-run up -d
-# dry-run: cannot query wslc (...); assuming empty state
 wslc.exe network create -l com.docker.compose.network=default -l com.docker.compose.project=minimal minimal_default
 wslc.exe pull nginx:alpine
 wslc.exe run -d --name minimal-hello-1 -l com.docker.compose.container-number=1 -l com.docker.compose.oneoff=False -l com.docker.compose.project=minimal -l com.docker.compose.project.config_files=C:/src/demo/minimal.yaml -l com.docker.compose.project.working_dir=C:/src/demo -l com.docker.compose.service=hello -l com.wslc.compose.config-hash=<sha256> -l com.wslc.compose.version=dev -p 8080:80 --network minimal_default --network-alias hello --dns 1.1.1.1 nginx:alpine
@@ -282,7 +660,7 @@ wslc.exe network remove minimal_default
   已存在的资源不受影响；`--wait` 阶段的失败不回滚，便于查看日志。
 - **确定性顺序。** 依赖顺序使用稳定的拓扑排序（同层按名称），dry-run 输出与 golden 测试完全可复现。
 
-更详细的包结构见 [docs/architecture.md](docs/architecture.md)。
+更详细的包结构见 [docs/architecture.md](docs/architecture.md)（英文）。
 
 ## 已知限制
 
@@ -307,7 +685,7 @@ make race     # 竞态检测
 make cover    # 覆盖率
 make golden   # 输出有意变化后重写 testdata/golden
 make lint     # gofmt + go vet
-make dist     # 全部平台二进制 + 脚本 + checksums.txt
+make dist     # 全部平台二进制（amd64 经 UPX 压缩）+ 脚本 + checksums.txt
 ```
 
 项目结构：
@@ -335,12 +713,12 @@ scripts/              install.ps1 与 `wslc compose` 包装脚本
 1. 在 `internal/translate` 中实现映射，并在 `testdata/compose/full.yaml` 中使用该字段；
 2. 若该字段此前在 `internal/project/policy.go` 中被警告，删除对应规则；
 3. `make golden` 更新 golden 文件，检查 diff 是否符合预期；
-4. 更新本 README 的支持矩阵。
+4. 更新本 README 的支持矩阵（中英文两部分）。
 
 提交前请确保 `make lint race` 通过。欢迎附上真机 `wslc --version` 与 `wslc <cmd> --help` 输出来校正映射。
 
 发布新版本：编写 `docs/release-notes/vX.Y.Z.md`，然后 `git tag vX.Y.Z && git push origin vX.Y.Z`，
-`release.yml` 会测试、交叉编译并创建 GitHub Release（附 `checksums.txt`）。
+`release.yml` 会测试、交叉编译、UPX 压缩并创建 GitHub Release（附 `checksums.txt`）。Release 只由 CI 发布。
 
 ## 许可
 
