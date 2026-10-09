@@ -68,6 +68,7 @@ func (a *App) Ps(ctx context.Context, o PsOptions) error {
 		}
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
+		enc.SetEscapeHTML(false) // keep "0.0.0.0:80->80/tcp" readable
 		return enc.Encode(rows)
 	default:
 		health := slices.ContainsFunc(cs, func(c wslc.Container) bool { return c.Health != "" })
