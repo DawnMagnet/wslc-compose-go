@@ -3,6 +3,8 @@ on:
   push:
     branches: [main]
   pull_request:
+permissions:
+  contents: read
 jobs:
   test:
     strategy:
@@ -14,19 +16,23 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: gofmt
+        if: runner.os == 'Linux'
+        run: test -z "$(gofmt -l .)" || (gofmt -l .; exit 1)
       - run: go vet ./...
       - run: go test -race -count=1 ./...
-      - run: go build -o bin/wslc-compose ./cmd/wslc-compose
-  release-binaries:
+  binaries:
     needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: make windows linux
+      - run: make dist
       - uses: actions/upload-artifact@v4
         with:
-          name: wslc-compose
+          name: wslc-compose-${{ github.sha }}
           path: dist/*

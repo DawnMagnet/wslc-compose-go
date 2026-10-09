@@ -11,9 +11,9 @@ import (
 	"github.com/compose-spec/compose-go/v2/types"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/dawnmagnet/wslc-compose-go/internal/logs"
-	"github.com/dawnmagnet/wslc-compose-go/internal/project"
-	"github.com/dawnmagnet/wslc-compose-go/internal/wslc"
+	"github.com/DawnMagnet/wslc-compose-go/internal/logs"
+	"github.com/DawnMagnet/wslc-compose-go/internal/project"
+	"github.com/DawnMagnet/wslc-compose-go/internal/wslc"
 )
 
 // PsOptions are the flags of `ps`.

@@ -1,4 +1,4 @@
-module github.com/dawnmagnet/wslc-compose-go
+module github.com/DawnMagnet/wslc-compose-go
 
 go 1.24.0
 

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dawnmagnet/wslc-compose-go/internal/golden"
+	"github.com/DawnMagnet/wslc-compose-go/internal/golden"
 )
 
 func load(t *testing.T, file string, mod func(*Options)) *Options {

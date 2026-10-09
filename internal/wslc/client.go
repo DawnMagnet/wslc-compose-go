@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/dawnmagnet/wslc-compose-go/internal/labels"
+	"github.com/DawnMagnet/wslc-compose-go/internal/labels"
 )
 
 // Options configures a Client.

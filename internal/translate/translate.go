@@ -14,8 +14,8 @@ import (
 
 	"github.com/compose-spec/compose-go/v2/types"
 
-	"github.com/dawnmagnet/wslc-compose-go/internal/labels"
-	"github.com/dawnmagnet/wslc-compose-go/internal/paths"
+	"github.com/DawnMagnet/wslc-compose-go/internal/labels"
+	"github.com/DawnMagnet/wslc-compose-go/internal/paths"
 )
 
 // DefaultDNS is used when a service declares no `dns:`. The wslc utility VM

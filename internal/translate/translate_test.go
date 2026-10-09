@@ -11,10 +11,10 @@ import (
 
 	"github.com/compose-spec/compose-go/v2/types"
 
-	"github.com/dawnmagnet/wslc-compose-go/internal/golden"
-	"github.com/dawnmagnet/wslc-compose-go/internal/labels"
-	"github.com/dawnmagnet/wslc-compose-go/internal/project"
-	"github.com/dawnmagnet/wslc-compose-go/internal/wslc"
+	"github.com/DawnMagnet/wslc-compose-go/internal/golden"
+	"github.com/DawnMagnet/wslc-compose-go/internal/labels"
+	"github.com/DawnMagnet/wslc-compose-go/internal/project"
+	"github.com/DawnMagnet/wslc-compose-go/internal/wslc"
 )
 
 func translator(t *testing.T, file string) *Translator {

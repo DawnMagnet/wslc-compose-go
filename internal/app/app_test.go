@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dawnmagnet/wslc-compose-go/internal/golden"
-	"github.com/dawnmagnet/wslc-compose-go/internal/project"
-	"github.com/dawnmagnet/wslc-compose-go/internal/wslc"
+	"github.com/DawnMagnet/wslc-compose-go/internal/golden"
+	"github.com/DawnMagnet/wslc-compose-go/internal/project"
+	"github.com/DawnMagnet/wslc-compose-go/internal/wslc"
 )
 
 var ctx = context.Background()

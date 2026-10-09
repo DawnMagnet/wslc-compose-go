@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/dawnmagnet/wslc-compose-go/internal/app"
+	"github.com/DawnMagnet/wslc-compose-go/internal/app"
 )
 
 func execCmd(build func() *app.App) *cobra.Command {

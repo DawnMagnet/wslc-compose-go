@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dawnmagnet/wslc-compose-go/internal/labels"
+	"github.com/DawnMagnet/wslc-compose-go/internal/labels"
 )
 
 // Container is the subset of wslc list/inspect output wslc-compose relies on.

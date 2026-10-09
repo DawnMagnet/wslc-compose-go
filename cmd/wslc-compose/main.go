@@ -10,8 +10,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/dawnmagnet/wslc-compose-go/internal/cli"
-	"github.com/dawnmagnet/wslc-compose-go/internal/wslc"
+	"github.com/DawnMagnet/wslc-compose-go/internal/cli"
+	"github.com/DawnMagnet/wslc-compose-go/internal/wslc"
 )
 
 func main() {

@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dawnmagnet/wslc-compose-go/internal/golden"
-	"github.com/dawnmagnet/wslc-compose-go/internal/labels"
-	"github.com/dawnmagnet/wslc-compose-go/internal/wslc"
+	"github.com/DawnMagnet/wslc-compose-go/internal/golden"
+	"github.com/DawnMagnet/wslc-compose-go/internal/labels"
+	"github.com/DawnMagnet/wslc-compose-go/internal/wslc"
 )
 
 // fakeWSLC emulates just enough of the wslc CLI for orchestration tests.

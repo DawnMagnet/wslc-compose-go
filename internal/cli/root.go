@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/dawnmagnet/wslc-compose-go/internal/app"
-	"github.com/dawnmagnet/wslc-compose-go/internal/translate"
+	"github.com/DawnMagnet/wslc-compose-go/internal/app"
+	"github.com/DawnMagnet/wslc-compose-go/internal/translate"
 )
 
 // Factory builds the App once global flags are parsed; tests may replace it.

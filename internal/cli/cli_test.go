@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dawnmagnet/wslc-compose-go/internal/app"
-	"github.com/dawnmagnet/wslc-compose-go/internal/golden"
-	"github.com/dawnmagnet/wslc-compose-go/internal/wslc"
+	"github.com/DawnMagnet/wslc-compose-go/internal/app"
+	"github.com/DawnMagnet/wslc-compose-go/internal/golden"
+	"github.com/DawnMagnet/wslc-compose-go/internal/wslc"
 )
 
 // run executes the CLI with a recording runner and returns stdout + calls.

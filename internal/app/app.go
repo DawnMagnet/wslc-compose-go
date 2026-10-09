@@ -14,12 +14,12 @@ import (
 
 	"github.com/compose-spec/compose-go/v2/types"
 
-	"github.com/dawnmagnet/wslc-compose-go/internal/labels"
-	"github.com/dawnmagnet/wslc-compose-go/internal/paths"
-	"github.com/dawnmagnet/wslc-compose-go/internal/plan"
-	"github.com/dawnmagnet/wslc-compose-go/internal/project"
-	"github.com/dawnmagnet/wslc-compose-go/internal/translate"
-	"github.com/dawnmagnet/wslc-compose-go/internal/wslc"
+	"github.com/DawnMagnet/wslc-compose-go/internal/labels"
+	"github.com/DawnMagnet/wslc-compose-go/internal/paths"
+	"github.com/DawnMagnet/wslc-compose-go/internal/plan"
+	"github.com/DawnMagnet/wslc-compose-go/internal/project"
+	"github.com/DawnMagnet/wslc-compose-go/internal/translate"
+	"github.com/DawnMagnet/wslc-compose-go/internal/wslc"
 )
 
 // Options are the global flags shared by every command.

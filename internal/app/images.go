@@ -7,8 +7,8 @@ import (
 
 	"github.com/compose-spec/compose-go/v2/types"
 
-	"github.com/dawnmagnet/wslc-compose-go/internal/translate"
-	"github.com/dawnmagnet/wslc-compose-go/internal/wslc"
+	"github.com/DawnMagnet/wslc-compose-go/internal/translate"
+	"github.com/DawnMagnet/wslc-compose-go/internal/wslc"
 )
 
 type imageOptions struct {

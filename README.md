@@ -1,5 +1,9 @@
 # wslc-compose
 
+[![ci](https://github.com/DawnMagnet/wslc-compose-go/actions/workflows/ci.yml/badge.svg)](https://github.com/DawnMagnet/wslc-compose-go/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/DawnMagnet/wslc-compose-go)](https://github.com/DawnMagnet/wslc-compose-go/releases/latest)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 > 用标准 Compose 文件驱动 **WSL Containers（`wslc`）** 的 Go 实现。
 > 在微软官方 `wslc compose` 发布之前，提供 `docker compose` 风格的无缝体验。
 
@@ -13,8 +17,9 @@
 - **`--strict`**：遇到 wslc 无法实现的字段直接报错，而不是静默忽略。
 - **单一可执行文件**：Windows 原生 exe，或在 WSL 发行版内运行并自动调用 `wslc.exe`。
 
-> 状态：预览。所有 wslc 交互都经过 mock 测试；真实 wslc 上的行为请以 `--dry-run` 先确认，
-> 发现差异欢迎提 issue。
+> 状态：预览（v0.1）。单元/golden 测试覆盖全部 wslc 交互（mock Runner）；并已在 Windows 11 +
+> **wslc 3.0.1** 真机上回归 `up`/`up -d`/`down -v`/`ps`/`logs`/`exec`/`run`/`build`/`pull`/`--scale`、
+> 健康检查等待、匿名卷与 **GPU（RTX 5060 Ti，CUDA）**。遇到差异欢迎附 `--dry-run` 输出提 issue。
 
 ---
 
@@ -32,18 +37,72 @@
 
 ## 安装
 
-需要 Windows 11 + WSL 2.9.3 及以上（包含 `wslc`）。构建需要 Go 1.24+。
+需要 Windows 11 + WSL 2.9.3 及以上（自带 `wslc`，可用 `wsl --update` 升级）。
+
+### 一键安装（推荐）
+
+在 PowerShell（5.1 或 7 均可，无需管理员）中运行：
 
 ```powershell
-# 方式一：go install（Windows 上直接得到 wslc-compose.exe）
-go install github.com/dawnmagnet/wslc-compose-go/cmd/wslc-compose@latest
+irm https://raw.githubusercontent.com/DawnMagnet/wslc-compose-go/main/scripts/install.ps1 | iex
+```
 
-# 方式二：源码构建
-git clone https://github.com/dawnmagnet/wslc-compose-go
-cd wslc-compose-go
-make build          # 本机平台 -> bin/wslc-compose
-make windows        # 交叉编译 -> dist/wslc-compose-windows-{amd64,arm64}.exe
-make linux          # 在 WSL 发行版内使用的 Linux 版本
+脚本会：
+
+1. 自动识别 amd64 / arm64，从 [GitHub Releases](https://github.com/DawnMagnet/wslc-compose-go/releases) 下载最新的
+   `wslc-compose-windows-<arch>.exe`，并用 `checksums.txt` 校验 SHA-256；
+2. 安装到 `%LOCALAPPDATA%\Programs\wslc-compose\wslc-compose.exe`（覆盖旧版本即为升级）；
+3. 把该目录加入**用户** PATH；
+4. 在 `$PROFILE` 中加一行 dot-source `wslc-compose.ps1`，让 `wslc compose ...` 直接可用。
+
+重新打开终端后即可使用 `wslc-compose` 或 `wslc compose`。
+
+带参数安装（`irm | iex` 无法传参，用 scriptblock 形式）：
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/DawnMagnet/wslc-compose-go/main/scripts/install.ps1))) -Version v0.1.0 -InstallDir D:\tools\wslc-compose
+```
+
+| 参数 | 环境变量（适用于 `irm \| iex`） | 说明 |
+|---|---|---|
+| `-Version` | `WSLC_COMPOSE_VERSION` | 指定版本标签，默认 `latest` |
+| `-InstallDir` | `WSLC_COMPOSE_INSTALL_DIR` | 安装目录，默认 `%LOCALAPPDATA%\Programs\wslc-compose` |
+| `-BaseUrl` | `WSLC_COMPOSE_BASE_URL` | Releases 根地址，可换成镜像或 fork |
+| `-Arch` | | 强制 `amd64` / `arm64` |
+| `-NoPath` | | 不修改用户 PATH |
+| `-NoProfile` | | 不修改 `$PROFILE`（不启用 `wslc compose`） |
+| `-Uninstall` | | 删除安装目录、PATH 条目和 `$PROFILE` 中的那一行 |
+
+> 若 PowerShell 执行策略为 `Restricted`（Windows 客户端默认），`$PROFILE` 不会被加载，脚本会提示运行
+> `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`。`wslc-compose` 命令本身不受影响。
+
+卸载：
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/DawnMagnet/wslc-compose-go/main/scripts/install.ps1))) -Uninstall
+```
+
+### 手动下载 / WSL 发行版内使用
+
+每个 Release 都附带 `wslc-compose-{windows,linux}-{amd64,arm64}` 二进制、包装脚本和 `checksums.txt`。
+在 WSL 发行版内：
+
+```bash
+curl -fsSLo ~/.local/bin/wslc-compose \
+  https://github.com/DawnMagnet/wslc-compose-go/releases/latest/download/wslc-compose-linux-amd64
+chmod +x ~/.local/bin/wslc-compose
+```
+
+### 从源码构建
+
+需要 Go 1.24+：
+
+```bash
+go install github.com/DawnMagnet/wslc-compose-go/cmd/wslc-compose@latest
+# 或
+git clone https://github.com/DawnMagnet/wslc-compose-go && cd wslc-compose-go
+make build   # 本机平台 -> bin/wslc-compose
+make dist    # 全部平台 + 包装脚本 + checksums.txt -> dist/
 ```
 
 `wslc` 可执行文件的查找顺序：`--wslc` 参数 → `$WSLC_COMPOSE_BIN` → `PATH` 中的 `wslc.exe` / `wslc`
@@ -58,9 +117,11 @@ make linux          # 在 WSL 发行版内使用的 Linux 版本
 
 | 环境 | 做法 |
 |---|---|
-| PowerShell | 在 `$PROFILE` 中加入 `. <repo>\scripts\wslc-compose.ps1` |
-| bash / zsh（WSL 内） | 在 `~/.bashrc` 中加入 `source <repo>/scripts/wslc-compose.sh` |
-| cmd.exe / 脚本 | 把 `scripts\wslc.cmd` 所在目录放到 PATH 中 `C:\Program Files\WSL` **之前** |
+| PowerShell | `install.ps1` 已自动完成；手动方式：在 `$PROFILE` 中加入 `. <安装目录>\wslc-compose.ps1` |
+| bash / zsh（WSL 内） | 在 `~/.bashrc` 中加入 `source <path>/wslc-compose.sh`（需 PATH 中有 Linux 版 `wslc-compose`） |
+| cmd.exe / 批处理 | 把 `wslc.cmd` 所在目录放到 PATH 中 `C:\Program Files\WSL` **之前**。系统 PATH 优先于用户 PATH，因此需要管理员把它加进系统 PATH；一般直接用 `wslc-compose` 更省事 |
+
+三个脚本都在仓库 `scripts/` 下，也作为 Release 附件提供。
 
 之后即可：
 
@@ -234,6 +295,7 @@ wslc.exe network remove minimal_default
   建议把项目放在 Windows 盘符下。
 - 未声明值的环境变量（如 `environment: [TOKEN]` 且宿主未设置）会被跳过，因为 wslc 进程运行在 Windows 侧。
 - 匿名卷被改写为按服务命名的卷，因此同一服务的多个副本**共享**该卷（Docker 中每个容器各有一个）。
+- wslc 的 `--gpus` 只接受 `all`，GPU 设备的 `count` / `device_ids` 会被当作全部 GPU。
 - `--entrypoint` 覆盖（`run`）按空白拆分，不支持引号。
 - `scripts/wslc.cmd` 的参数转发不处理带引号的复杂参数，复杂场景请直接用 `wslc-compose`。
 
@@ -245,7 +307,7 @@ make race     # 竞态检测
 make cover    # 覆盖率
 make golden   # 输出有意变化后重写 testdata/golden
 make lint     # gofmt + go vet
-make windows  # 交叉编译 Windows exe
+make dist     # 全部平台二进制 + 脚本 + checksums.txt
 ```
 
 项目结构：
@@ -264,7 +326,8 @@ internal/logs/        带前缀的日志多路复用
 internal/golden/      测试辅助（golden 文件比对）
 testdata/compose/     测试用 compose 文件
 testdata/golden/      锁定的 wslc 命令序列
-scripts/              `wslc compose` 包装脚本
+scripts/              install.ps1 与 `wslc compose` 包装脚本
+.github/workflows/     ci.yml（测试 + 构建）、release.yml（打 tag 自动发布）
 ```
 
 新增一个字段映射的步骤：
@@ -275,6 +338,9 @@ scripts/              `wslc compose` 包装脚本
 4. 更新本 README 的支持矩阵。
 
 提交前请确保 `make lint race` 通过。欢迎附上真机 `wslc --version` 与 `wslc <cmd> --help` 输出来校正映射。
+
+发布新版本：编写 `docs/release-notes/vX.Y.Z.md`，然后 `git tag vX.Y.Z && git push origin vX.Y.Z`，
+`release.yml` 会测试、交叉编译并创建 GitHub Release（附 `checksums.txt`）。
 
 ## 许可
 

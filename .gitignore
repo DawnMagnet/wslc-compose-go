@@ -1,4 +1,8 @@
 /bin/
 /dist/
 *.exe
+*.test
 coverage.out
+.idea/
+.vscode/
+.DS_Store
