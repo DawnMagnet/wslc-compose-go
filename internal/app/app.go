@@ -84,8 +84,19 @@ func (a *App) infof(format string, args ...any) {
 	fmt.Fprintf(a.io.Stderr, format+"\n", args...)
 }
 
-// load reads the project and applies the unsupported-field policy.
+// load reads the project, applies the unsupported-field policy (issues go
+// to stderr unless quiet) and names anonymous volumes for wslc.
 func (a *App) load(ctx context.Context, services []string, noDeps, quiet bool) (*types.Project, error) {
+	p, err := a.loadRaw(ctx, services, noDeps, quiet)
+	if err != nil {
+		return nil, err
+	}
+	project.NameAnonymousVolumes(p)
+	return p, nil
+}
+
+// loadRaw is load without wslc-specific rewrites (used by `config`).
+func (a *App) loadRaw(ctx context.Context, services []string, noDeps, quiet bool) (*types.Project, error) {
 	p, err := project.Load(ctx, project.Options{
 		Files: a.o.Files, Name: a.o.ProjectName, WorkDir: a.o.ProjectDir,
 		EnvFiles: a.o.EnvFiles, Profiles: a.o.Profiles, Services: services, NoDeps: noDeps,

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"text/tabwriter"
 
+	"github.com/compose-spec/compose-go/v2/types"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/dawnmagnet/wslc-compose-go/internal/logs"
@@ -16,10 +18,12 @@ import (
 
 // PsOptions are the flags of `ps`.
 type PsOptions struct {
-	Services []string
-	All      bool
-	Quiet    bool
-	Format   string // table|json
+	Services     []string
+	All          bool
+	Quiet        bool
+	ListServices bool     // --services: print service names only
+	Status       []string // --status: keep containers in these states (implies All)
+	Format       string   // table|json
 }
 
 // Ps lists the project's containers.
@@ -28,15 +32,27 @@ func (a *App) Ps(ctx context.Context, o PsOptions) error {
 	if err != nil {
 		return err
 	}
-	cs, err := a.c.Containers(ctx, p.Name, o.All)
+	cs, err := a.c.Containers(ctx, p.Name, o.All || len(o.Status) > 0)
 	if err != nil {
 		return err
 	}
 	cs = filter(cs, o.Services)
+	if len(o.Status) > 0 {
+		cs = slices.DeleteFunc(cs, func(c wslc.Container) bool { return !slices.Contains(o.Status, c.State) })
+	}
 	svcOrder, _ := allOrder(p, false)
 	sortContainers(cs, svcOrder)
+	a.fillHealth(ctx, p, cs)
 	out := a.io.Stdout
 	switch {
+	case o.ListServices:
+		var seen []string
+		for _, c := range cs {
+			if !slices.Contains(seen, c.Service()) {
+				seen = append(seen, c.Service())
+				fmt.Fprintln(out, c.Service())
+			}
+		}
 	case o.Quiet:
 		for _, c := range cs {
 			fmt.Fprintln(out, firstNonEmpty(c.ID, c.Name))
@@ -54,18 +70,40 @@ func (a *App) Ps(ctx context.Context, o PsOptions) error {
 		enc.SetIndent("", "  ")
 		return enc.Encode(rows)
 	default:
+		health := slices.ContainsFunc(cs, func(c wslc.Container) bool { return c.Health != "" })
 		tw := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(tw, "NAME\tIMAGE\tSERVICE\tSTATUS\tPORTS")
-		for _, c := range cs {
-			status := c.State
-			if c.Health != "" {
-				status += " (" + c.Health + ")"
+		row := func(cols ...string) {
+			if !health {
+				cols = slices.Delete(cols, 4, 5)
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", c.Name, c.Image, c.Service(), status, c.Ports)
+			fmt.Fprintln(tw, strings.Join(cols, "\t"))
+		}
+		row("NAME", "IMAGE", "SERVICE", "STATUS", "HEALTH", "PORTS")
+		for _, c := range cs {
+			row(c.Name, c.Image, c.Service(), c.State, c.Health, c.Ports)
 		}
 		return tw.Flush()
 	}
 	return nil
+}
+
+// fillHealth inspects running containers of services that declare a
+// healthcheck when `wslc list` did not report their health.
+func (a *App) fillHealth(ctx context.Context, p *types.Project, cs []wslc.Container) {
+	g, gctx := errgroup.WithContext(ctx)
+	for i, c := range cs {
+		hc := p.Services[c.Service()].HealthCheck
+		if c.Health != "" || !c.Running() || hc == nil || hc.Disable {
+			continue
+		}
+		g.Go(func() error {
+			if full, err := a.c.Inspect(gctx, firstNonEmpty(c.ID, c.Name)); err == nil {
+				cs[i].Health = full.Health
+			}
+			return nil
+		})
+	}
+	_ = g.Wait()
 }
 
 // LogsOptions are the flags of `logs`.
@@ -147,7 +185,8 @@ type ConfigOptions struct {
 
 // Config prints the normalized model or one of its projections.
 func (a *App) Config(ctx context.Context, o ConfigOptions) error {
-	p, err := a.load(ctx, nil, false, false)
+	listing := o.Services || o.Volumes || o.Networks || o.Images || o.Hash != ""
+	p, err := a.loadRaw(ctx, nil, false, listing) // listings stay machine-readable
 	if err != nil {
 		return err
 	}
@@ -172,6 +211,7 @@ func (a *App) Config(ctx context.Context, o ConfigOptions) error {
 		}
 		return lines(imgs)
 	case o.Hash != "":
+		project.NameAnonymousVolumes(p) // hash exactly what `up` deploys
 		names := p.ServiceNames()
 		if o.Hash != "*" {
 			names = strings.Split(o.Hash, ",")

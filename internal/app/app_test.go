@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -321,5 +322,88 @@ func TestWaitDegradesWithoutHealth(t *testing.T) {
 	h.fake.exited["y"] = 0
 	if err := h.app.waitFor(ctx, "y", waitHealthy, 20*time.Millisecond); err == nil {
 		t.Fatal("expected timeout for exited container waiting on health")
+	}
+}
+
+func TestUpRollsBackOnFailure(t *testing.T) {
+	h := newHarness(t, "full.yaml", nil)
+	h.fake.images = map[string]bool{"example/api:1.0": true, "postgres:16-alpine": true, "example/web:dev": true}
+	h.fake.volumes = []string{"shared-dbdata"} // pre-existing: must survive
+	h.fake.health["full-api-1"] = []string{"healthy"}
+	h.fake.health["full-api-2"] = []string{"healthy"}
+	h.fake.failRun = "full-web"
+	err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1, WaitTimeout: time.Second})
+	if err == nil {
+		t.Fatal("up must fail")
+	}
+	m := h.fake.mutations()
+	want := "wslc remove -f full-web\nwslc remove -f full-api-2\nwslc remove -f full-api-1\nwslc remove -f full-db-1\n" +
+		"wslc volume remove full_web_scratch_anon\nwslc volume remove full_cache\n" +
+		"wslc network remove full_front\nwslc network remove full_back\n"
+	if !strings.HasSuffix(m, want) {
+		t.Fatalf("rollback mismatch:\n%s", m)
+	}
+	if strings.Contains(m, "remove shared-dbdata") || !strings.Contains(h.stderr.String(), "Rolling back") {
+		t.Fatalf("pre-existing volume touched or no notice:\n%s\n%s", m, h.stderr.String())
+	}
+}
+
+func TestUpScaleOverride(t *testing.T) {
+	h := newHarness(t, "minimal.yaml", nil)
+	h.fake.networks = []string{"minimal_default"}
+	h.fake.images["nginx:alpine"] = true
+	hash := hashOf(t, h, "hello")
+	h.fake.containers = append(h.fake.containers,
+		container("minimal", "hello", 1, hash, true), container("minimal", "hello", 2, hash, true))
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1, Scale: map[string]int{"hello": 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.fake.mutations(); got != "wslc remove -f minimal-hello-2\n" && !strings.Contains(got, "stop minimal-hello-2") {
+		t.Fatalf("scale down: %q", got)
+	}
+	h.fake.calls = nil
+	h.fake.containers = h.fake.containers[:1]
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1, Scale: map[string]int{"hello": 3}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.fake.mutations(); strings.Count(got, "wslc run -d") != 2 || !strings.Contains(got, "minimal-hello-3") {
+		t.Fatalf("scale up: %q", got)
+	}
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Scale: map[string]int{"nope": 1}}); err == nil {
+		t.Fatal("unknown service accepted")
+	}
+}
+
+func TestPsServicesStatusHealth(t *testing.T) {
+	h := newHarness(t, "full.yaml", nil)
+	h.fake.containers = append(h.fake.containers,
+		container("full", "web", 1, "h", true),
+		container("full", "api", 1, "h", true),
+		container("full", "db", 1, "h", false))
+	h.fake.health["api-1"] = []string{"healthy"} // inspected by ID
+	if err := h.app.Ps(ctx, PsOptions{ListServices: true, All: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.stdout.String(); got != "db\napi\nweb\n" {
+		t.Fatalf("--services: %q", got)
+	}
+	h.stdout.Reset()
+	if err := h.app.Ps(ctx, PsOptions{Status: []string{"exited"}}); err != nil {
+		t.Fatal(err)
+	}
+	if out := h.stdout.String(); !strings.Contains(out, "full-db-1") || strings.Contains(out, "full-web-1") || strings.Contains(out, "HEALTH") {
+		t.Fatalf("--status exited:\n%s", out)
+	}
+	h.stdout.Reset()
+	if err := h.app.Ps(ctx, PsOptions{Status: []string{"running"}}); err != nil {
+		t.Fatal(err)
+	}
+	out := h.stdout.String()
+	if !strings.Contains(out, "HEALTH") || !strings.Contains(out, "healthy") || strings.Contains(out, "full-db-1") {
+		t.Fatalf("--status running with health:\n%s", out)
+	}
+	// web declares a healthcheck too, but only api reports one; db is not inspected.
+	if slices.Contains(h.fake.calls, "wslc inspect db-1") {
+		t.Fatal("stopped containers must not be inspected")
 	}
 }

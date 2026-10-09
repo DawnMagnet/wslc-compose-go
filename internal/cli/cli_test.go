@@ -67,9 +67,57 @@ func TestExecPassesCommandVerbatim(t *testing.T) {
 	}
 }
 
+func TestDashDashIsStripped(t *testing.T) {
+	_, calls, err := run(t, "exec", "-T", "hello", "--", "ls", "-la")
+	if err != nil || calls[len(calls)-1] != "exec -i minimal-hello-1 ls -la" {
+		t.Fatalf("exec: %v %v", err, calls)
+	}
+	out, _, err := run(t, "--dry-run", "run", "--rm", "-T", "--no-deps", "hello", "--", "echo", "hi")
+	if err != nil || !strings.Contains(out, "nginx:alpine echo hi") {
+		t.Fatalf("run: %v\n%s", err, out)
+	}
+	if _, _, err := run(t, "exec", "hello", "--"); err == nil {
+		t.Fatal("exec with only -- accepted")
+	}
+}
+
+func TestUpScale(t *testing.T) {
+	out, _, err := run(t, "--dry-run", "up", "-d", "--scale", "hello=3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"--name minimal-hello-1", "--name minimal-hello-3"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q:\n%s", want, out)
+		}
+	}
+	for _, bad := range []string{"hello", "hello=x", "hello=-1", "=2", "nope=2"} {
+		if _, _, err := run(t, "--dry-run", "up", "-d", "--scale", bad); err == nil {
+			t.Errorf("--scale %s accepted", bad)
+		}
+	}
+}
+
+func TestConfigListingsAreQuiet(t *testing.T) {
+	var out bytes.Buffer
+	factory := func(o app.Options) *app.App {
+		o.IgnoreOSEnv = true
+		return app.New(o, wslc.RunnerFunc(func(context.Context, []string, wslc.IO) error { return nil }),
+			golden.Paths, wslc.IO{Stdout: &out, Stderr: &out})
+	}
+	root := NewRoot(factory)
+	root.SetArgs([]string{"-f", golden.Compose("full.yaml"), "config", "--services"})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "api\ndb\nweb\n" {
+		t.Fatalf("config --services must print only names, got:\n%s", out.String())
+	}
+}
+
 func TestCommandsWire(t *testing.T) {
 	for _, args := range [][]string{
-		{"config", "--services"}, {"ps", "-a"}, {"logs", "-f", "--tail", "5"}, {"down", "-v"},
+		{"config", "--services"}, {"ps", "-a"}, {"ps", "--services", "--status", "running", "--status", "exited"}, {"logs", "-f", "--tail", "5"}, {"down", "-v"},
 		{"start"}, {"stop", "-t", "1"}, {"restart"}, {"build", "--no-cache"}, {"pull"},
 		{"version", "--short"}, {"run", "--rm", "-T", "--no-deps", "hello", "true"},
 	} {

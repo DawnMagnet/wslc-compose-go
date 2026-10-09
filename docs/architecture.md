@@ -46,8 +46,10 @@ compose.yaml ──► project (compose-go 加载 + 策略检查 + 配置哈希)
 
 ## up 的执行流程
 
-1. 加载项目 → 策略检查（`--strict` 时任何 WARN 都中止，且在调用 wslc 之前）。
-2. 创建所需网络（含 ipam subnet/gateway、internal、driver_opts、标签）和命名卷；external 资源只校验存在。
+1. 加载项目 → 策略检查（`--strict` 时任何 WARN 都中止，且在调用 wslc 之前）→
+   匿名卷改写为项目内命名卷（`project.NameAnonymousVolumes`）→ 应用 `--scale` 覆盖。
+2. 创建所需网络（含 ipam subnet/gateway、internal、driver_opts、标签）和命名卷（带 project/volume 标签）；
+   external 资源只校验存在。
 3. 镜像准备：有 `build` 的服务按 `--build` / `pull_policy: build` / 镜像缺失 决定是否构建；
    其余按 `pull_policy`（always / missing / never）拉取，同一镜像只拉一次。
    被重新构建的服务会被强制重建容器。
@@ -55,4 +57,6 @@ compose.yaml ──► project (compose-go 加载 + 策略检查 + 配置哈希)
    （`service_healthy` 轮询 `wslc inspect`、`service_completed_successfully` 等待退出码 0），
    再执行 plan 给出的操作。
 5. 处理孤儿容器（警告或 `--remove-orphans` 删除）。
+   第 2–5 步中每个新建的网络、卷、容器都会登记到 `rollback`；任一步失败即逆序删除它们（best effort，
+   dry-run 不回滚）。
 6. `--wait` 等待就绪；非 `-d` 时附着日志，Ctrl+C 后按逆序停止容器。

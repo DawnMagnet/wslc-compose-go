@@ -160,3 +160,29 @@ func TestServiceHash(t *testing.T) {
 		t.Fatal("ServiceHash must not mutate its input")
 	}
 }
+
+func TestNameAnonymousVolumes(t *testing.T) {
+	p, err := Load(context.Background(), *load(t, "full.yaml", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	NameAnonymousVolumes(p)
+	NameAnonymousVolumes(p) // idempotent
+	var got []string
+	for _, v := range p.Services["web"].Volumes {
+		if v.Target == "/scratch" {
+			got = append(got, v.Source)
+		}
+	}
+	if len(got) != 1 || got[0] != "web_scratch_anon" {
+		t.Fatalf("anonymous volume not named: %v", got)
+	}
+	if v := p.Volumes["web_scratch_anon"]; v.Name != "full_web_scratch_anon" {
+		t.Fatalf("volume not declared: %+v", v)
+	}
+	for in, want := range map[string]string{"/var/lib/Data-1": "var_lib_data_1", "/": "root", "/a//b/": "a_b"} {
+		if got := sanitize(in); got != want {
+			t.Errorf("sanitize(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

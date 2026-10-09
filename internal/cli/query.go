@@ -19,6 +19,8 @@ func psCmd(build func() *app.App) *cobra.Command {
 	}
 	c.Flags().BoolVarP(&o.All, "all", "a", false, "Show all containers, including stopped ones")
 	c.Flags().BoolVarP(&o.Quiet, "quiet", "q", false, "Only display IDs")
+	c.Flags().BoolVar(&o.ListServices, "services", false, "Display services")
+	c.Flags().StringArrayVar(&o.Status, "status", nil, "Filter services by status: created|running|exited|... (repeatable)")
 	c.Flags().StringVar(&o.Format, "format", "table", "Output format: table|json")
 	return c
 }

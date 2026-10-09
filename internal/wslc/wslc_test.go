@@ -195,3 +195,48 @@ func TestExecRunnerReportsFailures(t *testing.T) {
 		t.Fatalf("exit code/stderr not captured: %v", err)
 	}
 }
+
+func TestPullRetriesNetworkErrorsAndVolumeLabels(t *testing.T) {
+	n := 0
+	r := &recorder{respond: func(args []string, _ IO) error {
+		if args[0] == "pull" {
+			if n++; n < 2 {
+				return &Error{Args: args, Code: 1, Stderr: "Get https://registry-1.docker.io/v2/: EOF", Shown: true}
+			}
+		}
+		return nil
+	}}
+	c := New(r, Options{Backoff: time.Millisecond})
+	ctx := context.Background()
+	if err := c.Pull(ctx, "nginx", IO{}); err != nil || n != 2 {
+		t.Fatalf("pull should retry EOF once: err=%v n=%d", err, n)
+	}
+	if err := c.Start(ctx, "x"); err != nil {
+		t.Fatal(err)
+	}
+	r.respond = func(args []string, _ IO) error { return &Error{Args: args, Code: 1, Stderr: "EOF"} }
+	r.calls = nil
+	if err := c.Start(ctx, "x"); err == nil || len(r.calls) != 1 {
+		t.Fatalf("EOF must only be retried for pulls: %v", r.calls)
+	}
+	r.respond, r.calls = nil, nil
+	_ = c.CreateVolume(ctx, "v", map[string]string{"b": "2", "a": "1"})
+	if r.calls[0] != "volume create -l a=1 -l b=2 v" {
+		t.Fatalf("got %v", r.calls)
+	}
+}
+
+func TestErrorOmitsStderrAlreadyShown(t *testing.T) {
+	e := &Error{Args: []string{"pull", "x"}, Code: 1, Stderr: "manifest unknown", Shown: true}
+	if e.Error() != "wslc pull x: exit 1" {
+		t.Fatalf("got %q", e.Error())
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	var shown bytes.Buffer
+	err := Exec{Bin: "sh"}.Run(context.Background(), []string{"-c", "echo $((40+2)) >&2; exit 2"}, IO{Stderr: &shown})
+	if shown.String() != "42\n" || strings.Contains(err.Error(), "42") || !matches(err, []string{"42"}) {
+		t.Fatalf("stderr must be streamed once and still matchable: %q / %v", shown.String(), err)
+	}
+}

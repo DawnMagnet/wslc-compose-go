@@ -122,14 +122,14 @@ wslc-compose down -v
 
 | 命令 | 主要参数 | 行为 |
 |---|---|---|
-| `up [SERVICE...]` | `-d` `--build` `--no-build` `--pull` `--force-recreate` `--no-recreate` `--no-deps` `--remove-orphans` `--wait` `--wait-timeout` `-t` | 创建网络/卷 → 构建/拉取 → 依赖顺序收敛容器；非 `-d` 时附着日志，Ctrl+C 停止 |
+| `up [SERVICE...]` | `-d` `--build` `--no-build` `--pull` `--force-recreate` `--no-recreate` `--no-deps` `--remove-orphans` `--scale SVC=N` `--wait` `--wait-timeout` `-t` | 创建网络/卷 → 构建/拉取 → 依赖顺序收敛容器；非 `-d` 时附着日志，Ctrl+C 停止。`--scale` 覆盖 `scale`/`deploy.replicas`（可多次、可为 0）。失败时回滚本次新建的容器/网络/卷 |
 | `down` | `-v` `--remove-orphans` `-t` | 逆依赖顺序停止并删除容器，删除项目网络；`-v` 删除声明的命名卷（external 不动） |
-| `ps [SERVICE...]` | `-a` `-q` `--format table\|json` | 列出项目容器 |
+| `ps [SERVICE...]` | `-a` `-q` `--services` `--status STATE`（可多次，隐含 `-a`） `--format table\|json` | 列出项目容器；声明了 healthcheck 的运行中容器会额外显示 `HEALTH` 列 |
 | `logs [SERVICE...]` | `-f` `-n/--tail` `-t` `--since` `--until` `--no-log-prefix` | 多容器日志合并，带 `name |` 前缀 |
 | `build [SERVICE...]` | `--no-cache` `--pull` | 构建所有带 `build:` 的服务 |
 | `pull [SERVICE...]` | `--ignore-pull-failures` | 拉取镜像（同一镜像只拉一次） |
-| `config` | `--services` `--volumes` `--networks` `--images` `--hash "*"` `--format yaml\|json` | 输出规范化模型或其投影 |
-| `exec SERVICE CMD...` | `-i`(默认开) `-t` `-T` `-d` `-u` `-w` `-e` `--index` | 在运行中的容器里执行命令；TTY 默认随 stdin 是否为终端 |
+| `config` | `--services` `--volumes` `--networks` `--images` `--hash "*"` `--format yaml\|json` | 输出规范化模型或其投影；列表模式只输出名字（不打印 INFO/WARN） |
+| `exec SERVICE [--] CMD...` | `-i`(默认开) `-t` `-T` `-d` `-u` `-w` `-e` `--index` | 在运行中的容器里执行命令；TTY 默认随 stdin 是否为终端；`--` 分隔符会被去掉（`run` 同理） |
 | `run SERVICE [CMD...]` | `--rm` `-d` `--name` `--no-deps` `--service-ports` `-T` `-u` `-w` `-e` `--entrypoint` `--build` | 一次性容器（`oneoff=True` 标签），默认先拉起依赖 |
 | `start` / `stop` / `restart` | `-t` | wslc 没有 restart，`restart` = stop + start |
 | `version` | `--short` | 显示自身与 wslc 版本 |
@@ -145,10 +145,10 @@ wslc-compose down -v
 | `command`、`entrypoint` | `--entrypoint <首项>` + 镜像 + 其余项 + command |
 | `environment`、`env_file` | `-e K=V`（env_file 由 compose-go 合并，按键排序） |
 | `ports`（含 host_ip、范围展开、udp） | `-p [ip:]host:container[/udp]` |
-| `volumes` bind / 命名卷 / 匿名卷 / tmpfs（含 size）、`tmpfs`、`read_only` 挂载 | `-v` / `--tmpfs`，bind 源路径转换为 Windows 正斜杠形式 |
+| `volumes` bind / 命名卷 / 匿名卷 / tmpfs（含 size）、`tmpfs`、`read_only` 挂载 | `-v` / `--tmpfs`，bind 源路径转换为 Windows 正斜杠形式。wslc 不接受裸路径，匿名卷（`- /data`）自动改写为项目内命名卷 `<project>_<service>_<path>_anon`（重建容器时数据保留，`down -v` 删除） |
 | `networks`（含默认网络 `<project>_default`、`aliases`）、`network_mode: none` | `--network` + `--network-alias <service>` + aliases |
 | 顶层 `networks`：`driver`、`internal`、`ipam.config[0].subnet/gateway`、`driver_opts`、`labels`、`external`、`name` | `wslc network create …` |
-| 顶层 `volumes`：`name`、`external` | `wslc volume create` |
+| 顶层 `volumes`：`name`、`external`、`labels` | `wslc volume create -l com.docker.compose.project=… -l com.docker.compose.volume=…` |
 | `working_dir`、`user`、`hostname`、`domainname`、`labels` | `-w` `-u` `-h` `--domainname` `-l` |
 | `dns`、`dns_search`、`dns_opt` | `--dns` `--dns-search` `--dns-option` |
 | `mem_limit` / `deploy.resources.limits.memory`、`cpus` / `limits.cpus`、`shm_size` | `-m 512M`（自动大写单位）`--cpus` `--shm-size` |
@@ -179,7 +179,7 @@ wslc-compose down -v
 `build.secrets/ssh/platforms/cache_from/cache_to/additional_contexts/network/extra_hosts/dockerfile_inline`、
 `healthcheck.start_interval`、非 bridge 网络驱动、IPv6、卷驱动及选项、`deploy.resources.reservations`（内存）。
 
-**❌ 不支持的命令**：`watch`、`attach`、`cp`、`top`、`pause`/`unpause`、`port`、`events`、`images`、`scale`、`kill`、`rm`、`create`、`push`、`ls`（多项目）。
+**❌ 不支持的命令**：`watch`、`attach`、`cp`、`top`、`pause`/`unpause`、`port`、`events`、`images`、`scale`（请用 `up --scale`）、`kill`、`rm`、`create`、`push`、`ls`（多项目）。
 
 ## dry-run 示例
 
@@ -215,6 +215,10 @@ wslc.exe network remove minimal_default
 - **内存单位大写。** wslc 拒绝 `512m`，只接受 `512M`，因此所有字节数都格式化为 `K/M/G` 大写后缀。
 - **串行 + 重试。** wslc 预览版在并发调用时可能返回 `ERROR_SHARING_VIOLATION`，刚停止的容器重建时可能返回
   `ERROR_ALREADY_EXISTS`；短命令默认串行执行，并对这两类错误最多重试 5 次（间隔 2 秒）。
+  `pull` 另外对镜像仓库的网络抖动（`EOF`、超时、连接重置、429/502/503）重试。已实时显示过的 wslc 错误输出
+  不会在最终错误信息里再打印一次。
+- **失败回滚。** `up` 中途失败时（拉取/构建/启动失败、依赖不健康），按逆序删除**本次**创建的容器、网络和卷，
+  已存在的资源不受影响；`--wait` 阶段的失败不回滚，便于查看日志。
 - **确定性顺序。** 依赖顺序使用稳定的拓扑排序（同层按名称），dry-run 输出与 golden 测试完全可复现。
 
 更详细的包结构见 [docs/architecture.md](docs/architecture.md)。
@@ -229,7 +233,7 @@ wslc.exe network remove minimal_default
 - WSL 发行版内部路径（非 `/mnt/<盘符>`）会变成 `//wsl.localhost/...` UNC 形式，wslc 是否接受取决于版本；
   建议把项目放在 Windows 盘符下。
 - 未声明值的环境变量（如 `environment: [TOKEN]` 且宿主未设置）会被跳过，因为 wslc 进程运行在 Windows 侧。
-- 匿名卷在 `down -v` 时不会被跟踪删除；使用 `wslc volume prune` 清理。
+- 匿名卷被改写为按服务命名的卷，因此同一服务的多个副本**共享**该卷（Docker 中每个容器各有一个）。
 - `--entrypoint` 覆盖（`run`）按空白拆分，不支持引号。
 - `scripts/wslc.cmd` 的参数转发不处理带引号的复杂参数，复杂场景请直接用 `wslc-compose`。
 

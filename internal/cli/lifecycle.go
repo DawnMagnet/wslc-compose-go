@@ -1,13 +1,20 @@
 package cli
 
 import (
+	"fmt"
+	"strconv"
+	"strings"
+
 	"github.com/spf13/cobra"
 
 	"github.com/dawnmagnet/wslc-compose-go/internal/app"
 )
 
 func upCmd(build func() *app.App) *cobra.Command {
-	var o app.UpOptions
+	var (
+		o     app.UpOptions
+		scale []string
+	)
 	c := &cobra.Command{
 		Use:   "up [SERVICE...]",
 		Short: "Create and start containers",
@@ -15,10 +22,15 @@ func upCmd(build func() *app.App) *cobra.Command {
 			"in dependency order. Containers whose configuration hash is unchanged are kept.",
 		RunE: func(c *cobra.Command, args []string) error {
 			o.Services = args
+			var err error
+			if o.Scale, err = parseScale(scale); err != nil {
+				return err
+			}
 			return build().Up(c.Context(), o)
 		},
 	}
 	f := c.Flags()
+	f.StringArrayVar(&scale, "scale", nil, "Scale SERVICE to NUM instances; overrides `scale`/`deploy.replicas` (SERVICE=NUM)")
 	f.BoolVarP(&o.Detach, "detach", "d", false, "Run containers in the background")
 	f.BoolVar(&o.Build, "build", false, "Build images before starting containers")
 	f.BoolVar(&o.NoBuild, "no-build", false, "Don't build an image, even if it's missing")
@@ -82,4 +94,21 @@ func restartCmd(build func() *app.App) *cobra.Command {
 	}
 	timeoutFlag(c, &timeout)
 	return c
+}
+
+// parseScale parses repeated SERVICE=NUM values.
+func parseScale(vs []string) (map[string]int, error) {
+	if len(vs) == 0 {
+		return nil, nil
+	}
+	m := make(map[string]int, len(vs))
+	for _, v := range vs {
+		name, num, ok := strings.Cut(v, "=")
+		n, err := strconv.Atoi(num)
+		if !ok || name == "" || err != nil || n < 0 {
+			return nil, fmt.Errorf("invalid --scale %q: want SERVICE=NUM", v)
+		}
+		m[name] = n
+	}
+	return m, nil
 }

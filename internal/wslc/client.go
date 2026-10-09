@@ -3,6 +3,7 @@ package wslc
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -65,6 +66,10 @@ func (c *Client) DryRun() bool { return c.o.DryRun }
 // store can briefly refuse concurrent access.
 var transient = []string{"ERROR_ALREADY_EXISTS", "ERROR_SHARING_VIOLATION"}
 
+// network lists registry/network failure markers worth retrying for pulls
+// (Docker Hub regularly drops connections with a bare EOF).
+var network = []string{"EOF", "timeout", "connection reset", "TLS handshake", "temporarily unavailable", "i/o timeout", "503", "502", "429"}
+
 func (c *Client) acquire() func() {
 	c.sem <- struct{}{}
 	return func() { <-c.sem }
@@ -89,6 +94,12 @@ func (c *Client) query(ctx context.Context, args ...string) ([]byte, error) {
 // mutate runs a state-changing command (or prints it in dry-run mode),
 // retrying transient failures.
 func (c *Client) mutate(ctx context.Context, stdio IO, args ...string) error {
+	return c.retry(ctx, stdio, transient, args...)
+}
+
+// retry runs a mutation, retrying failures whose error text contains one of
+// markers.
+func (c *Client) retry(ctx context.Context, stdio IO, markers []string, args ...string) error {
 	if c.o.DryRun {
 		fmt.Fprintln(c.o.Log, Format(c.o.Bin, args))
 		return nil
@@ -96,7 +107,7 @@ func (c *Client) mutate(ctx context.Context, stdio IO, args ...string) error {
 	defer c.acquire()()
 	var err error
 	for attempt := 1; attempt <= c.o.Retries; attempt++ {
-		if err = c.r.Run(ctx, args, stdio); err == nil || !isTransient(err) || attempt == c.o.Retries {
+		if err = c.r.Run(ctx, args, stdio); err == nil || !matches(err, markers) || attempt == c.o.Retries {
 			return err
 		}
 		fmt.Fprintf(c.o.Log, "wslc %s: transient error, retrying (%d/%d)\n", args[0], attempt, c.o.Retries-1)
@@ -119,9 +130,16 @@ func (c *Client) stream(ctx context.Context, stdio IO, args ...string) error {
 	return c.r.Run(ctx, args, stdio)
 }
 
-func isTransient(err error) bool {
-	for _, m := range transient {
-		if strings.Contains(err.Error(), m) {
+// matches reports whether err (including stderr that was already shown to
+// the user) mentions one of markers.
+func matches(err error, markers []string) bool {
+	text := err.Error()
+	var we *Error
+	if errors.As(err, &we) {
+		text += " " + we.Stderr
+	}
+	for _, m := range markers {
+		if strings.Contains(text, m) {
 			return true
 		}
 	}
@@ -181,9 +199,13 @@ func (c *Client) Inspect(ctx context.Context, name string) (Container, error) {
 }
 
 // ImageExists reports whether ref is present in the wslc image store.
+// A missing image is an expected failure, so (unlike query) it never
+// triggers the dry-run "cannot query wslc" notice.
 func (c *Client) ImageExists(ctx context.Context, ref string) bool {
-	out, err := c.query(ctx, "image", "inspect", ref)
-	return err == nil && len(bytes.TrimSpace(out)) > 0
+	defer c.acquire()()
+	var out bytes.Buffer
+	err := c.r.Run(ctx, []string{"image", "inspect", ref}, IO{Stdout: &out})
+	return err == nil && len(bytes.TrimSpace(out.Bytes())) > 0
 }
 
 // Networks returns the set of existing network names.
@@ -245,9 +267,10 @@ func (c *Client) RemoveNetwork(ctx context.Context, name string) error {
 	return c.mutate(ctx, IO{}, "network", "remove", name)
 }
 
-// CreateVolume creates a named volume.
-func (c *Client) CreateVolume(ctx context.Context, name string) error {
-	return c.mutate(ctx, IO{}, "volume", "create", name)
+// CreateVolume creates a named volume carrying the given labels.
+func (c *Client) CreateVolume(ctx context.Context, name string, l map[string]string) error {
+	args := append([]string{"volume", "create"}, labels.Flags(l)...)
+	return c.mutate(ctx, IO{}, append(args, name)...)
 }
 
 // RemoveVolume deletes a named volume.
@@ -270,9 +293,9 @@ func (c *Client) Build(ctx context.Context, args []string, stdio IO) error {
 	return c.mutate(ctx, stdio, args...)
 }
 
-// Pull pulls an image, streaming progress.
+// Pull pulls an image, streaming progress; registry hiccups are retried.
 func (c *Client) Pull(ctx context.Context, ref string, stdio IO) error {
-	return c.mutate(ctx, stdio, "pull", ref)
+	return c.retry(ctx, stdio, append(network, transient...), "pull", ref)
 }
 
 // Start starts an existing container.

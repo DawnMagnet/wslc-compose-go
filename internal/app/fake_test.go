@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -29,6 +30,7 @@ type fakeWSLC struct {
 	health     map[string][]string // per-container sequence of health states
 	logs       map[string]string
 	exited     map[string]int // containers that report exited with this code
+	failRun    string         // `run` of this container name fails
 }
 
 func (f *fakeWSLC) Run(ctx context.Context, args []string, stdio wslc.IO) error {
@@ -68,6 +70,9 @@ func (f *fakeWSLC) Run(ctx context.Context, args []string, stdio wslc.IO) error 
 			return nil
 		}
 		return errors.New("no such image")
+	}
+	if args[0] == "run" && f.failRun != "" && slices.Contains(args, f.failRun) {
+		return errors.New("invalid volume spec")
 	}
 	switch args[0] {
 	case "list":

@@ -43,13 +43,18 @@ type Error struct {
 	Code   int
 	Stderr string
 	Err    error
+	// Shown is set when Stderr was already streamed to the user's terminal;
+	// Error() then omits it so failures are not printed twice.
+	Shown bool
 }
 
 func (e *Error) Error() string {
 	msg := fmt.Sprintf("wslc %s: exit %d", strings.Join(head(e.Args, 2), " "), e.Code)
-	if e.Stderr != "" {
+	var ee *exec.ExitError
+	switch {
+	case e.Stderr != "" && !e.Shown:
 		msg += ": " + e.Stderr
-	} else if e.Err != nil {
+	case e.Stderr == "" && e.Err != nil && !errors.As(e.Err, &ee):
 		msg += ": " + e.Err.Error()
 	}
 	return msg
@@ -90,7 +95,7 @@ func (x Exec) Run(ctx context.Context, args []string, stdio IO) error {
 	if errors.As(err, &ee) {
 		code = ee.ExitCode()
 	}
-	return &Error{Args: args, Code: code, Stderr: strings.TrimSpace(errBuf.String()), Err: err}
+	return &Error{Args: args, Code: code, Stderr: strings.TrimSpace(errBuf.String()), Err: err, Shown: stdio.Stderr != nil}
 }
 
 // Fallback locations of wslc.exe when it is not on PATH.

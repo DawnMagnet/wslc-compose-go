@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/types"
@@ -28,61 +29,17 @@ type UpOptions struct {
 	NoRecreate    bool
 	NoDeps        bool
 	RemoveOrphans bool
-	Wait          bool          // after -d, wait until services are running/healthy
-	WaitTimeout   time.Duration // bound for dependency conditions and --wait
-	Timeout       int           // stop timeout in seconds (-1 = wslc default)
+	Wait          bool           // after -d, wait until services are running/healthy
+	WaitTimeout   time.Duration  // bound for dependency conditions and --wait
+	Scale         map[string]int // --scale SERVICE=N overrides scale/deploy.replicas
+	Timeout       int            // stop timeout in seconds (-1 = wslc default)
 }
 
 // Up creates networks/volumes, prepares images and converges containers in
 // dependency order. Without -d it then follows logs and stops on Ctrl+C.
 func (a *App) Up(ctx context.Context, o UpOptions) error {
-	p, err := a.load(ctx, o.Services, o.NoDeps, false)
+	started, err := a.converge(ctx, o)
 	if err != nil {
-		return err
-	}
-	if err := a.ensureResources(ctx, p); err != nil {
-		return err
-	}
-	rebuilt, err := a.prepareImages(ctx, p, imageOptions{build: o.Build, noBuild: o.NoBuild, pull: o.Pull})
-	if err != nil {
-		return err
-	}
-	cs, err := a.containers(ctx, p, true)
-	if err != nil {
-		return err
-	}
-	actual := actuals(cs)
-	names, err := order(p, false)
-	if err != nil {
-		return err
-	}
-	t := a.translator(p)
-	var started []string
-	for _, name := range names {
-		s := p.Services[name]
-		if err := a.waitDeps(ctx, p, s, o.WaitTimeout); err != nil {
-			return err
-		}
-		hash, err := project.ServiceHash(s)
-		if err != nil {
-			return err
-		}
-		replicas, err := replicaNames(p, s)
-		if err != nil {
-			return err
-		}
-		ops := plan.Service(plan.Desired{Service: name, Hash: hash, Names: replicas}, actual,
-			plan.Options{ForceRecreate: o.ForceRecreate || rebuilt[name], NoRecreate: o.NoRecreate})
-		for _, op := range ops {
-			if err := a.apply(ctx, t, s, hash, op, o.Timeout); err != nil {
-				return err
-			}
-			if op.Action != plan.Remove {
-				started = append(started, op.Name)
-			}
-		}
-	}
-	if err := a.handleOrphans(ctx, p, actual, o.RemoveOrphans, o.Timeout); err != nil {
 		return err
 	}
 	if o.Wait {
@@ -96,6 +53,117 @@ func (a *App) Up(ctx context.Context, o UpOptions) error {
 		return nil
 	}
 	return a.attach(ctx, started, o.Timeout)
+}
+
+// converge brings the project to its desired state and returns the
+// containers that should now be running. On failure everything it created
+// (containers, networks, volumes) is rolled back, best effort.
+func (a *App) converge(ctx context.Context, o UpOptions) (started []string, err error) {
+	p, err := a.load(ctx, o.Services, o.NoDeps, false)
+	if err != nil {
+		return nil, err
+	}
+	if err := applyScale(p, o.Scale); err != nil {
+		return nil, err
+	}
+	rb := &rollback{}
+	defer func() {
+		if err != nil && !a.c.DryRun() {
+			rb.run(context.WithoutCancel(ctx), a)
+		}
+	}()
+	if err := a.ensureResources(ctx, p, rb); err != nil {
+		return nil, err
+	}
+	rebuilt, err := a.prepareImages(ctx, p, imageOptions{build: o.Build, noBuild: o.NoBuild, pull: o.Pull})
+	if err != nil {
+		return nil, err
+	}
+	cs, err := a.containers(ctx, p, true)
+	if err != nil {
+		return nil, err
+	}
+	actual := actuals(cs)
+	names, err := order(p, false)
+	if err != nil {
+		return nil, err
+	}
+	t := a.translator(p)
+	for _, name := range names {
+		s := p.Services[name]
+		if err := a.waitDeps(ctx, p, s, o.WaitTimeout); err != nil {
+			return nil, err
+		}
+		hash, err := project.ServiceHash(s)
+		if err != nil {
+			return nil, err
+		}
+		replicas, err := replicaNames(p, s)
+		if err != nil {
+			return nil, err
+		}
+		ops := plan.Service(plan.Desired{Service: name, Hash: hash, Names: replicas}, actual,
+			plan.Options{ForceRecreate: o.ForceRecreate || rebuilt[name], NoRecreate: o.NoRecreate})
+		for _, op := range ops {
+			if op.Action == plan.Create || op.Action == plan.Recreate {
+				// Registered first: a failed `run` may still leave a container behind.
+				rb.add("Container", op.Name, a.c.Remove)
+			}
+			if err := a.apply(ctx, t, s, hash, op, o.Timeout); err != nil {
+				return nil, err
+			}
+			if op.Action != plan.Remove {
+				started = append(started, op.Name)
+			}
+		}
+	}
+	return started, a.handleOrphans(ctx, p, actual, o.RemoveOrphans, o.Timeout)
+}
+
+// applyScale overrides replica counts from `up --scale SERVICE=N`.
+func applyScale(p *types.Project, scale map[string]int) error {
+	for name, n := range scale {
+		s, ok := p.Services[name]
+		if !ok {
+			return fmt.Errorf("--scale: no such service: %s", name)
+		}
+		if n < 0 {
+			return fmt.Errorf("--scale %s: replicas must be >= 0", name)
+		}
+		s.SetScale(n)
+		p.Services[name] = s
+	}
+	return nil
+}
+
+// rollback records undo steps for resources created by a failing `up`.
+// A nil *rollback ignores registrations (callers that never roll back).
+type rollback struct{ steps []undo }
+
+type undo struct {
+	kind, name string
+	remove     func(context.Context, string) error
+}
+
+func (r *rollback) add(kind, name string, remove func(context.Context, string) error) {
+	if r != nil {
+		r.steps = append(r.steps, undo{kind, name, remove})
+	}
+}
+
+// run undoes the recorded steps in reverse order, reporting but not failing
+// on errors (a container whose `run` failed may simply not exist).
+func (r *rollback) run(ctx context.Context, a *App) {
+	if len(r.steps) == 0 {
+		return
+	}
+	a.infof("Rolling back resources created by this run")
+	for _, u := range slices.Backward(r.steps) {
+		a.infof("%s %s  Removing", u.kind, u.name)
+		if err := u.remove(ctx, u.name); err != nil && u.kind != "Container" {
+			a.infof("WARN rollback %s %s: %v", strings.ToLower(u.kind), u.name, err)
+		}
+	}
 }
 
 // apply executes one planned operation.
@@ -162,7 +230,8 @@ func orphanNames(as []plan.Actual) []string {
 
 // ensureResources creates the networks and named volumes used by the
 // selected services; external ones must already exist.
-func (a *App) ensureResources(ctx context.Context, p *types.Project) error {
+// Created resources are registered with rb (may be nil) for rollback.
+func (a *App) ensureResources(ctx context.Context, p *types.Project, rb *rollback) error {
 	nets, vols := map[string]bool{}, map[string]bool{}
 	for _, s := range p.Services {
 		if key := translate.Network(s); key != "" {
@@ -200,6 +269,7 @@ func (a *App) ensureResources(ctx context.Context, p *types.Project) error {
 				if err := a.c.CreateNetwork(ctx, name, spec); err != nil {
 					return err
 				}
+				rb.add("Network", name, a.c.RemoveNetwork)
 			}
 		}
 	}
@@ -219,9 +289,11 @@ func (a *App) ensureResources(ctx context.Context, p *types.Project) error {
 				}
 			default:
 				a.infof("Volume %s  Creating", name)
-				if err := a.c.CreateVolume(ctx, name); err != nil {
+				l := labels.Merge(v.Labels, map[string]string{labels.Project: p.Name, labels.Volume: key})
+				if err := a.c.CreateVolume(ctx, name, l); err != nil {
 					return err
 				}
+				rb.add("Volume", name, a.c.RemoveVolume)
 			}
 		}
 	}

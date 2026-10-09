@@ -24,7 +24,7 @@ func main() {
 		return
 	}
 	var we *wslc.Error
-	if errors.As(err, &we) && len(we.Args) > 0 && (we.Args[0] == "exec" || we.Args[0] == "run") && we.Stderr == "" {
+	if errors.As(err, &we) && len(we.Args) > 0 && (we.Args[0] == "exec" || we.Args[0] == "run") && (we.Stderr == "" || we.Shown) {
 		os.Exit(wslc.ExitCode(err)) // propagate the command's own exit status quietly
 	}
 	fmt.Fprintln(os.Stderr, "wslc-compose:", err)

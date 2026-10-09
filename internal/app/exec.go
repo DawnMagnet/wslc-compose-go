@@ -96,7 +96,7 @@ func (a *App) Run(ctx context.Context, o RunOptions) error {
 		if err := a.Up(ctx, UpOptions{Services: deps, Detach: true, Build: o.Build, Timeout: -1}); err != nil {
 			return err
 		}
-	} else if err := a.ensureResources(ctx, p); err != nil {
+	} else if err := a.ensureResources(ctx, p, nil); err != nil {
 		return err
 	}
 	only, err := p.WithSelectedServices([]string{o.Service}, types.IgnoreDependencies)
