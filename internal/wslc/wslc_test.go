@@ -240,3 +240,11 @@ func TestErrorOmitsStderrAlreadyShown(t *testing.T) {
 		t.Fatalf("stderr must be streamed once and still matchable: %q / %v", shown.String(), err)
 	}
 }
+
+func TestParseListHealthStatus(t *testing.T) {
+	cs, err := ParseContainers([]byte(`{"ID":"2ce7","Names":"p-web-1","State":"running","HealthStatus":"healthy","Labels":"com.docker.compose.service=web"}` + "\n" +
+		`{"ID":"bb18","Names":"p-w-1","State":"running","HealthStatus":""}`))
+	if err != nil || len(cs) != 2 || cs[0].Health != "healthy" || cs[1].Health != "" || cs[0].Service() != "web" {
+		t.Fatalf("got %+v %v", cs, err)
+	}
+}

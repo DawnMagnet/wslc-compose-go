@@ -159,13 +159,13 @@ wslc-compose down -v
 | `profiles`、`pull_policy`（always/missing/never/build） | 服务选择 / 镜像准备策略 |
 | 插值、`.env`、多 `-f` 合并、`extends`、`include` | 由 compose-go 原生处理 |
 
-**ℹ️ 已映射但需在真机核实**（不会触发 `--strict` 失败）
+**ℹ️ 已映射（已在 wslc 3.0.1 真机验证）**
 
 | 字段 | 说明 |
 |---|---|
-| `healthcheck` | 映射为 `--health-cmd/--health-interval/--health-timeout/--health-start-period/--health-retries`、`--no-healthcheck`。不同文档对 wslc 健康检查支持说法不一，请先 `wslc run --help` 确认。`CMD` 形式会被 shell 转义后拼接 |
+| `healthcheck` | 映射为 `--health-cmd/--health-interval/--health-timeout/--health-start-period/--health-retries`、`--no-healthcheck`；`CMD` 形式会被 shell 转义后拼接。`ps` 的 `HEALTH` 列读取 `wslc list` 的 `HealthStatus`（缺失时回退到 `inspect`） |
 | `depends_on: service_healthy` | 轮询 `wslc inspect` 的 `State.Health.Status`；若 wslc 不上报健康状态，连续 3 次后退化为“运行即视为健康”并给出警告 |
-| `ports[].mode: host` | 按普通端口发布处理 |
+| `ports[].mode: host` | 按普通端口发布处理（INFO 提示，不触发 `--strict`） |
 
 **⚠️ 忽略并警告**（`--strict` 时报错）
 

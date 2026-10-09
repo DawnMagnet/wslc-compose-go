@@ -55,7 +55,7 @@ func (a *App) prepareImages(ctx context.Context, p *types.Project, o imageOption
 		}
 		a.infof("Image %s  Pulling", img)
 		if err := a.c.Pull(ctx, img, stdio); err != nil {
-			return nil, fmt.Errorf("pull %s: %w", img, err)
+			return nil, err // already names the image
 		}
 		pulled[img] = true
 	}

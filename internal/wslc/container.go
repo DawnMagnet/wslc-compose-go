@@ -103,7 +103,8 @@ func parseContainer(m map[string]any) Container {
 		}
 	}
 	if c.Health == "" {
-		c.Health = strings.ToLower(str(find(m, "Health", "Status"), find(m, "Health")))
+		// `wslc list --format json` reports HealthStatus; inspect nests it under State.
+		c.Health = strings.ToLower(str(find(m, "HealthStatus"), find(m, "Health", "Status"), find(m, "Health")))
 	}
 	c.Ports = ports(find(m, "Ports"))
 	return c

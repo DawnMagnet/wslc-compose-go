@@ -177,14 +177,6 @@ func checkDynamic(name string, s *types.ServiceConfig) []Issue {
 			add(Info, "ports", "mode: host is treated like a normal published port")
 		}
 	}
-	if s.HealthCheck != nil && !s.HealthCheck.Disable {
-		add(Info, "healthcheck", "mapped to wslc --health-* flags; verify with `wslc run --help` on your build")
-	}
-	for dep, d := range s.DependsOn {
-		if d.Condition == types.ServiceConditionHealthy {
-			add(Info, "depends_on."+dep, "service_healthy waits by polling `wslc inspect`; falls back to service_started if no health state is reported")
-		}
-	}
 	if s.Deploy != nil && s.Deploy.Resources.Reservations != nil && s.Deploy.Resources.Reservations.MemoryBytes != 0 {
 		add(Warn, "deploy.resources.reservations", "only limits map to wslc; reservations ignored")
 	}
