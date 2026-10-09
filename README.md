@@ -72,7 +72,7 @@ wslc compose version   # PowerShell only
 With parameters (`irm | iex` cannot pass them, so use the scriptblock form):
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/DawnMagnet/wslc-compose-go/main/scripts/install.ps1))) -Version v0.1.1 -InstallDir D:\tools\wslc-compose
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/DawnMagnet/wslc-compose-go/main/scripts/install.ps1))) -Version v0.1.2 -InstallDir D:\tools\wslc-compose
 ```
 
 | Parameter | Env var (for `irm \| iex`) | Meaning |
@@ -440,7 +440,7 @@ wslc compose version   # 仅 PowerShell
 带参数安装（`irm | iex` 无法传参，用 scriptblock 形式）：
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/DawnMagnet/wslc-compose-go/main/scripts/install.ps1))) -Version v0.1.1 -InstallDir D:\tools\wslc-compose
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/DawnMagnet/wslc-compose-go/main/scripts/install.ps1))) -Version v0.1.2 -InstallDir D:\tools\wslc-compose
 ```
 
 | 参数 | 环境变量（适用于 `irm \| iex`） | 说明 |

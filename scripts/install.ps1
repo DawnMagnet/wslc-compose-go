@@ -16,7 +16,7 @@
 
 .EXAMPLE
     # With parameters (irm | iex cannot pass them):
-    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/DawnMagnet/wslc-compose-go/main/scripts/install.ps1))) -Version v0.1.1 -InstallDir D:\tools\wslc-compose
+    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/DawnMagnet/wslc-compose-go/main/scripts/install.ps1))) -Version v0.1.2 -InstallDir D:\tools\wslc-compose
 
 .NOTES
     For `irm | iex`, the parameters can also be given as environment variables:
@@ -24,7 +24,7 @@
 #>
 [CmdletBinding()]
 param(
-    # Release tag such as v0.1.1; "latest" (default) picks the newest release.
+    # Release tag such as v0.1.2; "latest" (default) picks the newest release.
     [string]$Version = $(if ($env:WSLC_COMPOSE_VERSION) { $env:WSLC_COMPOSE_VERSION } else { 'latest' }),
     # Installation directory (user-writable; added to the user PATH).
     [string]$InstallDir = $(if ($env:WSLC_COMPOSE_INSTALL_DIR) { $env:WSLC_COMPOSE_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\wslc-compose' }),
