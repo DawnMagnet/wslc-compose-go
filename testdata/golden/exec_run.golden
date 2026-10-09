@@ -1,0 +1,2 @@
+wslc exec -i -t -u root -e A=1 full-api-2 sh -c "echo hi"
+wslc run --rm --name oneoff -l com.docker.compose.oneoff=True -l com.docker.compose.project=full -l com.docker.compose.project.config_files=C:/proj/full.yaml -l com.docker.compose.project.working_dir=C:/proj -l com.docker.compose.service=db -l com.wslc.compose.config-hash=<hash> -l com.wslc.compose.version=dev -e POSTGRES_PASSWORD=secret -v shared-dbdata:/var/lib/postgresql/data --network full_back --dns 1.1.1.1 --no-healthcheck postgres:16-alpine psql --version

@@ -1,0 +1,15 @@
+# Profiles and build-only services.
+name: profiles
+services:
+  app:
+    build: ./app
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+  migrate:
+    image: busybox
+    command: echo migrated
+  debug:
+    image: busybox
+    profiles: [debug]
+    command: sleep infinity

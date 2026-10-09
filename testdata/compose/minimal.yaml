@@ -1,0 +1,6 @@
+# The smallest useful project: default network, default DNS, generated names.
+name: minimal
+services:
+  hello:
+    image: nginx:alpine
+    ports: ["8080:80"]

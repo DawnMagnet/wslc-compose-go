@@ -1,0 +1,1 @@
+[hello] wslc run -d --name minimal-hello-1 -l com.docker.compose.container-number=1 -l com.docker.compose.oneoff=False -l com.docker.compose.project=minimal -l com.docker.compose.service=hello -l com.wslc.compose.config-hash=HASH -l com.wslc.compose.version=test -p 8080:80 --network minimal_default --network-alias hello --dns 1.1.1.1 nginx:alpine

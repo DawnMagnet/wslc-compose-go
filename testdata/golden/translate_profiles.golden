@@ -1,0 +1,3 @@
+[app] wslc build -t profiles-app -f C:/proj/app/Dockerfile C:/proj/app
+[app] wslc run -d --name profiles-app-1 -l com.docker.compose.container-number=1 -l com.docker.compose.oneoff=False -l com.docker.compose.project=profiles -l com.docker.compose.service=app -l com.wslc.compose.config-hash=HASH -l com.wslc.compose.version=test --network profiles_default --network-alias app --dns 1.1.1.1 profiles-app
+[migrate] wslc run -d --name profiles-migrate-1 -l com.docker.compose.container-number=1 -l com.docker.compose.oneoff=False -l com.docker.compose.project=profiles -l com.docker.compose.service=migrate -l com.wslc.compose.config-hash=HASH -l com.wslc.compose.version=test --network profiles_default --network-alias migrate --dns 1.1.1.1 busybox echo migrated

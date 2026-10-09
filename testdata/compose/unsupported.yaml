@@ -1,0 +1,19 @@
+# Fields wslc cannot honor; --strict must reject this file.
+name: unsupported
+services:
+  svc:
+    image: alpine
+    restart: always
+    privileged: true
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/fuse:/dev/fuse"]
+    security_opt: ["seccomp=unconfined"]
+    sysctls: { net.core.somaxconn: "1024" }
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    platform: linux/arm64
+    logging: { driver: json-file }
+    secrets: [token]
+    network_mode: host
+secrets:
+  token:
+    file: ./api.env

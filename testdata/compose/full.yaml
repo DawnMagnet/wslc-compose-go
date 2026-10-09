@@ -1,0 +1,98 @@
+# Exercises every field wslc-compose maps onto wslc flags.
+name: full
+services:
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile.dev
+      args:
+        VERSION: "1.2"
+      target: runtime
+      labels:
+        org.example.stage: dev
+    image: example/web:dev
+    container_name: full-web
+    command: ["npm", "run", "start"]
+    entrypoint: ["/sbin/tini", "--"]
+    environment:
+      NODE_ENV: production
+      API_URL: http://api:8080
+    ports:
+      - "8080:80"
+      - "127.0.0.1:9443:443/udp"
+      - "3000"
+    volumes:
+      - ./app:/srv/app:ro
+      - cache:/var/cache/web
+      - /scratch
+      - type: tmpfs
+        target: /run/tmp
+        tmpfs:
+          size: 67108864
+    tmpfs: [/tmp]
+    working_dir: /srv/app
+    user: "1000:1000"
+    hostname: web01
+    domainname: example.test
+    labels:
+      com.example.tier: frontend
+    networks:
+      front:
+        aliases: [www, site]
+    dns: [8.8.8.8]
+    dns_search: [example.test]
+    dns_opt: [ndots:2]
+    mem_limit: 512m
+    cpus: 1.5
+    shm_size: 64m
+    ulimits:
+      nofile: { soft: 1024, hard: 2048 }
+      nproc: 512
+    stop_signal: SIGINT
+    stop_grace_period: 20s
+    tty: true
+    stdin_open: true
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health check"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      api:
+        condition: service_healthy
+  api:
+    image: example/api:1.0
+    env_file: [api.env]
+    deploy:
+      replicas: 2
+      resources:
+        limits: { cpus: "0.5", memory: 1g }
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    healthcheck:
+      test: curl -f http://localhost:8080/ || exit 1
+    networks: [front, back]
+    depends_on: [db]
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: secret
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+    networks: [back]
+    healthcheck:
+      disable: true
+networks:
+  front: {}
+  back:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+          gateway: 172.30.0.1
+volumes:
+  cache: {}
+  dbdata:
+    name: shared-dbdata
