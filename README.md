@@ -59,7 +59,8 @@ The script:
    [GitHub Releases](https://github.com/DawnMagnet/wslc-compose-go/releases) and verifies it against `checksums.txt`;
 2. installs it to `%LOCALAPPDATA%\Programs\wslc-compose\wslc-compose.exe` (re-running upgrades in place);
 3. adds that directory to the **user** PATH;
-4. dot-sources `wslc-compose.profile.ps1` from `$PROFILE`, enabling `wslc compose ...` in PowerShell.
+4. dot-sources `wslc-compose.profile.ps1` from the Windows PowerShell 5.1 **and** PowerShell 7 profiles,
+   enabling `wslc compose ...` in both.
 
 Open a new terminal, then:
 
@@ -426,7 +427,8 @@ irm https://raw.githubusercontent.com/DawnMagnet/wslc-compose-go/main/scripts/in
    `wslc-compose-windows-<arch>.exe`，并用 `checksums.txt` 校验 SHA-256；
 2. 安装到 `%LOCALAPPDATA%\Programs\wslc-compose\wslc-compose.exe`（覆盖旧版本即为升级）；
 3. 把该目录加入**用户** PATH；
-4. 在 `$PROFILE` 中加一行 dot-source `wslc-compose.profile.ps1`，让 PowerShell 里 `wslc compose ...` 直接可用。
+4. 在 Windows PowerShell 5.1 **和** PowerShell 7 的 profile 中各加一行 dot-source `wslc-compose.profile.ps1`，
+   让两种 PowerShell 里 `wslc compose ...` 都直接可用。
 
 重新打开终端后：
 

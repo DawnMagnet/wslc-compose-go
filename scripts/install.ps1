@@ -69,14 +69,25 @@ param(
         $env:Path = $session -join ';'
     }
 
+    # Windows PowerShell 5.1 and PowerShell 7 keep separate profiles
+    # (Documents\WindowsPowerShell vs Documents\PowerShell); update both so that
+    # `wslc compose` works whichever one the user opens.
+    function Get-ProfileFiles {
+        $docs = Split-Path -Parent (Split-Path -Parent $PROFILE.CurrentUserAllHosts)
+        @($PROFILE.CurrentUserAllHosts,
+          (Join-Path $docs 'WindowsPowerShell\profile.ps1'),
+          (Join-Path $docs 'PowerShell\profile.ps1')) | Select-Object -Unique
+    }
+
     function Set-ProfileLine([bool]$Present) {
-        $file = $PROFILE.CurrentUserAllHosts
-        $lines = @()
-        if (Test-Path -LiteralPath $file) { $lines = @(Get-Content -LiteralPath $file | Where-Object { $_ -notmatch '# wslc-compose$' }) }
-        if ($Present) { $lines += $ProfileLine }
-        elseif (-not (Test-Path -LiteralPath $file)) { return }
-        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $file) | Out-Null
-        Set-Content -LiteralPath $file -Value $lines -Encoding UTF8
+        foreach ($file in Get-ProfileFiles) {
+            $lines = @()
+            if (Test-Path -LiteralPath $file) { $lines = @(Get-Content -LiteralPath $file | Where-Object { $_ -notmatch '# wslc-compose$' }) }
+            elseif (-not $Present) { continue }
+            if ($Present) { $lines += $ProfileLine }
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $file) | Out-Null
+            Set-Content -LiteralPath $file -Value $lines -Encoding UTF8
+        }
     }
 
     function Get-File([string]$Url, [string]$Dest) {
@@ -140,7 +151,7 @@ param(
 
     if (-not $NoPath) { Write-Step 'Adding install dir to user PATH'; Set-UserPathEntry $true }
     if (-not $NoProfile) {
-        Write-Step "Enabling 'wslc compose' in $($PROFILE.CurrentUserAllHosts)"
+        Write-Step "Enabling 'wslc compose' in $((Get-ProfileFiles) -join ', ')"
         Set-ProfileLine $true
         if ((Get-ExecutionPolicy) -in 'Restricted', 'AllSigned') {
             Write-Warning "PowerShell execution policy is '$(Get-ExecutionPolicy)', so `$PROFILE will not load. Run: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned"
