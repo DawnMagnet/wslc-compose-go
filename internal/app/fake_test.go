@@ -53,15 +53,13 @@ func (f *fakeWSLC) Run(ctx context.Context, args []string, stdio wslc.IO) error 
 	}
 	switch strings.Join(args[:min(2, len(args))], " ") {
 	case "network list":
-		fmt.Fprintln(out, "NETWORK ID  NAME  DRIVER")
 		for _, n := range f.networks {
-			fmt.Fprintf(out, "x           %s  bridge\n", n)
+			fmt.Fprintf(out, "{\"Driver\":\"bridge\",\"ID\":\"x\",\"Name\":%q}\n", n)
 		}
 		return nil
 	case "volume list":
-		fmt.Fprintln(out, "DRIVER  VOLUME NAME")
 		for _, v := range f.volumes {
-			fmt.Fprintf(out, "local   %s\n", v)
+			fmt.Fprintf(out, "{\"Driver\":\"guest\",\"Name\":%q}\n", v)
 		}
 		return nil
 	case "image inspect":

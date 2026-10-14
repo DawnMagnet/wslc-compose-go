@@ -66,6 +66,10 @@ func TestParseNames(t *testing.T) {
 	if got := parseNames([]byte(vol)); !reflect.DeepEqual(got, []string{"p_data"}) {
 		t.Fatalf("volume table: %v", got)
 	}
+	lines := `{"Driver":"bridge","Name":"bridge"}` + "\n" + `{"Driver":"bridge","Name":"p_default"}` + "\n"
+	if got := parseNames([]byte(lines)); !reflect.DeepEqual(got, []string{"bridge", "p_default"}) {
+		t.Fatalf("json lines: %v", got)
+	}
 	if got := parseNames([]byte(`[{"Name":"a"},{"name":"b"}]`)); !reflect.DeepEqual(got, []string{"a", "b"}) {
 		t.Fatalf("json: %v", got)
 	}
@@ -97,7 +101,7 @@ func TestDryRunPrintsMutations(t *testing.T) {
 	if err != nil || len(nets) != 0 {
 		t.Fatalf("dry-run query should degrade to empty: %v %v", nets, err)
 	}
-	if len(r.calls) != 1 || r.calls[0] != "network list" {
+	if len(r.calls) != 1 || r.calls[0] != "network list --format json" {
 		t.Fatalf("dry-run must only execute queries, got %v", r.calls)
 	}
 	out := log.String()
@@ -124,6 +128,28 @@ func TestRetryTransient(t *testing.T) {
 	r.respond = func([]string, IO) error { n++; return errors.New("permanent") }
 	if err := c.Start(context.Background(), "x"); err == nil || n != 1 {
 		t.Fatalf("non-transient errors must not retry (n=%d)", n)
+	}
+}
+
+func TestListUsesJSONAndCreateDoesNotRetryExists(t *testing.T) {
+	n := 0
+	r := &recorder{respond: func(args []string, stdio IO) error {
+		if args[1] == "create" {
+			n++
+			return &Error{Args: args, Code: 1, Stderr: "ERROR_ALREADY_EXISTS"}
+		}
+		io.WriteString(stdio.Stdout, `{"Name":"x"}`+"\n")
+		return nil
+	}}
+	c := New(r, Options{Backoff: time.Millisecond, Log: io.Discard})
+	ctx := context.Background()
+	if vols, err := c.Volumes(ctx); err != nil || !vols["x"] {
+		t.Fatalf("volumes: %v %v", vols, err)
+	}
+	_ = c.CreateNetwork(ctx, "x", NetworkSpec{})
+	_ = c.CreateVolume(ctx, "x", nil)
+	if n != 2 || r.calls[0] != "volume list --format json" {
+		t.Fatalf("create must not retry ALREADY_EXISTS (n=%d, calls=%v)", n, r.calls)
 	}
 }
 
