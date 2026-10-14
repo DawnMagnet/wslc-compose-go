@@ -66,6 +66,11 @@ func (c *Client) DryRun() bool { return c.o.DryRun }
 // store can briefly refuse concurrent access.
 var transient = []string{"ERROR_ALREADY_EXISTS", "ERROR_SHARING_VIOLATION"}
 
+// sharing is the subset of transient markers that also applies to creating
+// networks and volumes. ERROR_ALREADY_EXISTS is excluded there: it means the
+// resource really exists, so retrying only delays the failure.
+var sharing = []string{"ERROR_SHARING_VIOLATION"}
+
 // network lists registry/network failure markers worth retrying for pulls
 // (Docker Hub regularly drops connections with a bare EOF).
 var network = []string{"EOF", "timeout", "connection reset", "TLS handshake", "temporarily unavailable", "i/o timeout", "503", "502", "429"}
@@ -210,12 +215,12 @@ func (c *Client) ImageExists(ctx context.Context, ref string) bool {
 
 // Networks returns the set of existing network names.
 func (c *Client) Networks(ctx context.Context) (map[string]bool, error) {
-	return c.names(ctx, "network", "list")
+	return c.names(ctx, "network", "list", "--format", "json")
 }
 
 // Volumes returns the set of existing volume names.
 func (c *Client) Volumes(ctx context.Context) (map[string]bool, error) {
-	return c.names(ctx, "volume", "list")
+	return c.names(ctx, "volume", "list", "--format", "json")
 }
 
 func (c *Client) names(ctx context.Context, args ...string) (map[string]bool, error) {
@@ -259,7 +264,7 @@ func (c *Client) CreateNetwork(ctx context.Context, name string, s NetworkSpec) 
 		args = append(args, "-o", kv)
 	}
 	args = append(args, labels.Flags(s.Labels)...)
-	return c.mutate(ctx, IO{}, append(args, name)...)
+	return c.retry(ctx, IO{}, sharing, append(args, name)...)
 }
 
 // RemoveNetwork deletes a network.
@@ -270,7 +275,7 @@ func (c *Client) RemoveNetwork(ctx context.Context, name string) error {
 // CreateVolume creates a named volume carrying the given labels.
 func (c *Client) CreateVolume(ctx context.Context, name string, l map[string]string) error {
 	args := append([]string{"volume", "create"}, labels.Flags(l)...)
-	return c.mutate(ctx, IO{}, append(args, name)...)
+	return c.retry(ctx, IO{}, sharing, append(args, name)...)
 }
 
 // RemoveVolume deletes a named volume.
