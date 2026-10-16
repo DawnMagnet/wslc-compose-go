@@ -40,7 +40,8 @@ func upCmd(build func() *app.App) *cobra.Command {
 	f.BoolVar(&o.NoDeps, "no-deps", false, "Don't start linked services")
 	f.BoolVar(&o.RemoveOrphans, "remove-orphans", false, "Remove containers for services not defined in the Compose file")
 	f.BoolVar(&o.Wait, "wait", false, "Wait for services to be running|healthy (implies -d)")
-	f.DurationVar(&o.WaitTimeout, "wait-timeout", defaultWait, "Maximum duration to wait for dependencies / --wait")
+	o.WaitTimeout = defaultWait
+	f.Var(waitValue{&o.WaitTimeout}, "wait-timeout", "Maximum time to wait for dependencies / --wait: integer seconds or a duration like 20m (0: default 5m)")
 	timeoutFlag(c, &o.Timeout)
 	c.MarkFlagsMutuallyExclusive("force-recreate", "no-recreate")
 	c.MarkFlagsMutuallyExclusive("build", "no-build")

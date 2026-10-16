@@ -3,7 +3,10 @@
 package cli
 
 import (
+	"fmt"
+	"math"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -81,6 +84,36 @@ func timeoutFlag(c *cobra.Command, v *int) {
 }
 
 const defaultWait = 5 * time.Minute
+
+// waitValue is a pflag.Value that accepts a bare integer as seconds (the
+// docker compose spelling) or a Go duration such as "20m". Negatives are rejected.
+type waitValue struct{ d *time.Duration }
+
+func (w waitValue) String() string {
+	if w.d == nil {
+		return ""
+	}
+	return w.d.String()
+}
+
+func (w waitValue) Set(s string) error {
+	var d time.Duration
+	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+		if n > int64(math.MaxInt64/time.Second) || n < int64(math.MinInt64/time.Second) {
+			return fmt.Errorf("value %q out of range", s)
+		}
+		d = time.Duration(n) * time.Second
+	} else if d, err = time.ParseDuration(s); err != nil {
+		return fmt.Errorf("expected integer seconds or a duration like 20m, got %q", s)
+	}
+	if d < 0 {
+		return fmt.Errorf("must not be negative, got %q", s)
+	}
+	*w.d = d
+	return nil
+}
+
+func (waitValue) Type() string { return "duration" }
 
 // globalWithValue lists global flags that consume the following argument.
 var globalWithValue = map[string]bool{

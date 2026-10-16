@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DawnMagnet/wslc-compose-go/internal/app"
 	"github.com/DawnMagnet/wslc-compose-go/internal/golden"
@@ -142,5 +143,33 @@ func TestNormalize(t *testing.T) {
 	}
 	if got := strings.Join(Normalize([]string{"-f", "logs", "up", "-f"}), " "); got != "-f logs up -f" {
 		t.Fatalf("file named logs must not trigger rewrite: %s", got)
+	}
+}
+
+func TestWaitTimeoutAcceptsSecondsAndDurations(t *testing.T) {
+	for _, v := range []string{"300", "20m", "0", "1h30m"} {
+		for _, args := range [][]string{{"--wait-timeout", v}, {"--wait-timeout=" + v}} {
+			if _, _, err := run(t, append([]string{"--dry-run", "up", "-d"}, args...)...); err != nil {
+				t.Errorf("--wait-timeout %s: %v", v, err)
+			}
+		}
+	}
+}
+
+func TestWaitTimeoutValue(t *testing.T) {
+	cases := map[string]time.Duration{
+		"300": 300 * time.Second, "0": 0, "20m": 20 * time.Minute, "1h30m": 90 * time.Minute, "1.5s": 1500 * time.Millisecond,
+	}
+	for in, want := range cases {
+		var d time.Duration
+		if err := (waitValue{&d}).Set(in); err != nil || d != want {
+			t.Errorf("Set(%q) = %v, %v; want %v", in, d, err, want)
+		}
+	}
+	for _, in := range []string{"-5", "-5s", "abc", "", "99999999999999999999", "9223372036854775807"} {
+		var d time.Duration
+		if err := (waitValue{&d}).Set(in); err == nil {
+			t.Errorf("Set(%q) should fail, got %v", in, d)
+		}
 	}
 }
