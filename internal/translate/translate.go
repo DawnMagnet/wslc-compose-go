@@ -6,6 +6,7 @@ package translate
 import (
 	"fmt"
 	"maps"
+	"net"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -188,12 +189,17 @@ func Env(m types.MappingWithEquals) []string {
 }
 
 // Ports renders port mappings as `[ip:][published:]target[/proto]`.
+//
+// A host port range published to a single container port ("8000-8002:80")
+// means "use any free host port in the range" in Compose, while wslc requires
+// both sides of a range to have the same length. Such ranges are resolved to
+// the first free host port here.
 func Ports(ps []types.ServicePortConfig) []string {
 	out := make([]string, 0, len(ps))
 	for _, p := range ps {
 		s := strconv.FormatUint(uint64(p.Target), 10)
 		if p.Published != "" {
-			s = p.Published + ":" + s
+			s = hostPort(p) + ":" + s
 			if p.HostIP != "" {
 				s = p.HostIP + ":" + s
 			}
@@ -204,6 +210,58 @@ func Ports(ps []types.ServicePortConfig) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// hostPort returns the published side of p, picking a single free host port
+// when a range maps to one container port.
+func hostPort(p types.ServicePortConfig) string {
+	lo, hi, ok := portRange(p.Published)
+	if !ok || lo == hi {
+		return p.Published
+	}
+	proto := p.Protocol
+	if proto == "" {
+		proto = "tcp"
+	}
+	for port := lo; port <= hi; port++ {
+		if portFree(p.HostIP, proto, port) {
+			return strconv.Itoa(port)
+		}
+	}
+	return strconv.Itoa(lo) // all busy: let wslc report the conflict
+}
+
+func portRange(s string) (lo, hi int, ok bool) {
+	a, b, found := strings.Cut(s, "-")
+	if !found {
+		return 0, 0, false
+	}
+	lo, err1 := strconv.Atoi(a)
+	hi, err2 := strconv.Atoi(b)
+	if err1 != nil || err2 != nil || lo <= 0 || hi > 65535 || lo > hi {
+		return 0, 0, false
+	}
+	return lo, hi, true
+}
+
+// portFree reports whether a host port can currently be bound. It is a
+// variable so tests can stub it.
+var portFree = func(ip, proto string, port int) bool {
+	addr := net.JoinHostPort(ip, strconv.Itoa(port))
+	if proto == "udp" {
+		c, err := net.ListenPacket("udp", addr)
+		if err != nil {
+			return false
+		}
+		c.Close()
+		return true
+	}
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return false
+	}
+	l.Close()
+	return true
 }
 
 func (t *Translator) volumes(s types.ServiceConfig) []string {
