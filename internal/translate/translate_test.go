@@ -3,6 +3,7 @@ package translate
 import (
 	"context"
 	"fmt"
+	"net"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -64,6 +65,53 @@ func TestPorts(t *testing.T) {
 		if got := Ports([]types.ServicePortConfig{tt.in}); got[0] != tt.want {
 			t.Errorf("Ports(%+v) = %q, want %q", tt.in, got[0], tt.want)
 		}
+	}
+}
+
+func TestPortsHostRange(t *testing.T) {
+	busy := map[int]bool{8000: true}
+	orig := portFree
+	portFree = func(_, _ string, port int) bool { return !busy[port] }
+	defer func() { portFree = orig }()
+
+	tests := []struct {
+		in   types.ServicePortConfig
+		want string
+	}{
+		// Compose semantics: pick one free host port from the range (#7).
+		{types.ServicePortConfig{Target: 80, Published: "8000-8002", Protocol: "tcp"}, "8001:80"},
+		{types.ServicePortConfig{Target: 53, Published: "5300-5301", Protocol: "udp", HostIP: "127.0.0.1"}, "127.0.0.1:5300:53/udp"},
+		// Degenerate or malformed ranges are passed through untouched.
+		{types.ServicePortConfig{Target: 80, Published: "9000-9000"}, "9000-9000:80"},
+		{types.ServicePortConfig{Target: 80, Published: "9001-9000"}, "9001-9000:80"},
+	}
+	for _, tt := range tests {
+		if got := Ports([]types.ServicePortConfig{tt.in}); got[0] != tt.want {
+			t.Errorf("Ports(%+v) = %q, want %q", tt.in, got[0], tt.want)
+		}
+	}
+
+	busy[8001], busy[8002] = true, true
+	if got := Ports([]types.ServicePortConfig{{Target: 80, Published: "8000-8002"}}); got[0] != "8000:80" {
+		t.Errorf("all busy: got %q, want 8000:80 so wslc reports the conflict", got[0])
+	}
+}
+
+func TestPortsHostRangeFree(t *testing.T) {
+	// Real probe: a port we hold open must be skipped.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skip(err)
+	}
+	defer l.Close()
+	port := l.Addr().(*net.TCPAddr).Port
+	if port >= 65535 {
+		t.Skip("ephemeral port at top of range")
+	}
+	in := types.ServicePortConfig{Target: 80, HostIP: "127.0.0.1", Published: fmt.Sprintf("%d-%d", port, port+1)}
+	want := fmt.Sprintf("127.0.0.1:%d:80", port+1)
+	if got := Ports([]types.ServicePortConfig{in}); got[0] != want {
+		t.Errorf("got %q, want %q", got[0], want)
 	}
 }
 
