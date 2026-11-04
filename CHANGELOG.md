@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.0 - 2026-11-04
 
 ### Fixed
 
@@ -19,7 +19,7 @@
   A subnet is a hard error only when that network will be created and a
   service assigns a static IPv4 address on it. An `ip_range` that is outside
   its subnet, or that has no usable IPv4 subnet (missing subnet, or an IPv6
-  subnet), is a hard error on wslc 3.0.3 before any command, because
+  subnet), is a hard error on wslc 3.0.3 before any wslc mutation, because
   `--ip-range` is not sent by older versions. An IPv6 subnet with no
   `ip_range`, and `/31` pools, stay warnings, and the subnet is still passed
   to `network create`. External networks are not checked. On wslc 3.0.1,
@@ -40,7 +40,7 @@
   highest-priority endpoint (`--network`, `--ip`, `--network-alias`) and the others
   are attached with `wslc network connect` (`--ip`, `--network-alias`, `--link-local-ip`,
   `--driver-opt`) before `start`. A single network still uses `wslc run -d`.
-- Network IPAM `ip_range` (`network create --ip-range`), plus validation that static
+- Network IPAM `ip_range` (`network create --ip-range`) (wslc 3.0.3.0+), plus validation that static
   addresses and ranges sit inside the subnet. Replicas cannot share one static address.
 - Secrets and configs. `file:` sources are mounted read-only at `/run/secrets/<name>`
   or `/<name>` (or `target`). `environment:` and `content:` are written under the
