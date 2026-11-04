@@ -131,6 +131,67 @@ func TestUpSecretsGolden(t *testing.T) {
 	golden.Assert(t, "dryrun_secrets.golden", hashRE.ReplaceAllString(dry.stdout.String(), "config-hash=<hash>"))
 }
 
+func TestUpHostsGolden(t *testing.T) {
+	h := newHarness(t, "hosts.yaml", nil)
+	h.fake.track = true
+	h.fake.images["alpine"] = true
+	h.fake.runtime = map[string]map[string]any{
+		"hosts-web-1": {
+			"HostConfig": map[string]any{"NetworkMode": "hosts_default"},
+			"NetworkSettings": map[string]any{
+				"Networks": map[string]any{
+					"hosts_default": map[string]any{"IPAddress": "172.28.0.2", "Gateway": "172.28.0.1"},
+				},
+			},
+			"Ports": map[string]any{
+				"80/tcp": []any{map[string]any{"HostIp": "0.0.0.0", "HostPort": "8080"}},
+			},
+		},
+	}
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("up: %v\n%s", err, h.stderr.String())
+	}
+	m := h.fake.mutations()
+	if !strings.Contains(m, "exec -u 0 hosts-web-1") || !strings.Contains(m, "system session run") || !strings.Contains(m, "DNAT") {
+		t.Fatalf("missing extra_hosts or host-gateway rules:\n%s", m)
+	}
+	if strings.Contains(m, "exec -u 0 hosts-db-1") {
+		t.Fatal("db has no extra_hosts")
+	}
+	golden.Assert(t, "up_hosts.golden", m)
+	h.fake.calls = nil
+	if err := h.app.Down(ctx, DownOptions{Timeout: -1}); err != nil {
+		t.Fatal(err)
+	}
+	down := h.fake.mutations()
+	if !strings.Contains(down, "system session run") || strings.Contains(down, "DNAT") {
+		t.Fatalf("down should remove host-gateway chains without installing DNAT:\n%s", down)
+	}
+
+	old := newHarness(t, "hosts.yaml", nil)
+	old.fake.track = true
+	old.fake.version = "wslc version 3.0.1.0"
+	old.fake.images["alpine"] = true
+	old.fake.runtime = h.fake.runtime
+	if err := old.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("old wslc: %v\n%s", err, old.stderr.String())
+	}
+	if strings.Contains(old.fake.mutations(), "system session") || !strings.Contains(old.stderr.String(), "published-port loopback") {
+		t.Fatalf("old wslc must skip session rules and warn:\n%s\n%s", old.fake.mutations(), old.stderr.String())
+	}
+	if !strings.Contains(old.fake.mutations(), "exec -u 0 hosts-web-1") {
+		t.Fatal("/etc/hosts update should still run")
+	}
+	dry := newHarness(t, "hosts.yaml", func(o *Options) { o.DryRun = true })
+	dry.fake.track = true
+	dry.fake.images["alpine"] = true
+	dry.fake.runtime = h.fake.runtime
+	if err := dry.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatal(err)
+	}
+	golden.Assert(t, "dryrun_hosts.golden", hashRE.ReplaceAllString(dry.stdout.String(), "config-hash=<hash>"))
+}
+
 func TestUpIsIdempotent(t *testing.T) {
 	h := newHarness(t, "minimal.yaml", nil)
 	h.fake.networks = []string{"minimal_default"}

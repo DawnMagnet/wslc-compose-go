@@ -30,9 +30,11 @@ type fakeWSLC struct {
 	images     map[string]bool
 	health     map[string][]string // per-container sequence of health states
 	logs       map[string]string
-	exited     map[string]int // containers that report exited with this code
-	failRun    string         // `run` of this container name fails
-	version    string         // `wslc --version` text; empty means 3.0.3.0
+	exited     map[string]int            // containers that report exited with this code
+	failRun    string                    // `run` of this container name fails
+	version    string                    // `wslc --version` text; empty means 3.0.3.0
+	runtime    map[string]map[string]any // extra inspect fields keyed by container name
+	track      bool                      // record containers created by run/create
 }
 
 func (f *fakeWSLC) Run(ctx context.Context, args []string, stdio wslc.IO) error {
@@ -90,7 +92,11 @@ func (f *fakeWSLC) Run(ctx context.Context, args []string, stdio wslc.IO) error 
 				f.health[name] = states[1:]
 			}
 		}
-		return json.NewEncoder(out).Encode([]any{map[string]any{"Name": name, "State": state}})
+		obj := map[string]any{"Name": name, "State": state}
+		for k, v := range f.runtime[name] {
+			obj[k] = v
+		}
+		return json.NewEncoder(out).Encode([]any{obj})
 	case "logs":
 		fmt.Fprint(out, f.logs[args[len(args)-1]])
 	case "--version", "version":
@@ -100,7 +106,33 @@ func (f *fakeWSLC) Run(ctx context.Context, args []string, stdio wslc.IO) error 
 		}
 		fmt.Fprintln(out, v)
 	}
+	if f.track && (args[0] == "run" || args[0] == "create") {
+		f.remember(args)
+	}
 	return nil
+}
+
+// remember keeps a container created by run/create so a later list/inspect
+// in the same test can see it (host-gateway programming reads inspect).
+func (f *fakeWSLC) remember(args []string) {
+	name := ""
+	labs := map[string]string{}
+	for i := 0; i < len(args)-1; i++ {
+		switch args[i] {
+		case "--name":
+			name = args[i+1]
+		case "-l":
+			if k, v, ok := strings.Cut(args[i+1], "="); ok {
+				labs[k] = v
+			}
+		}
+	}
+	if name == "" {
+		return
+	}
+	f.containers = append(f.containers, map[string]any{
+		"Id": name, "Name": name, "State": "running", "Labels": labs,
+	})
 }
 
 var hashRE = regexp.MustCompile(`config-hash=[0-9a-f]{64}`)

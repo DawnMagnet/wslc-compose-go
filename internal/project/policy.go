@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 
 	"github.com/compose-spec/compose-go/v2/types"
 )
@@ -61,7 +62,6 @@ var serviceRules = []rule{
 	{"device_cgroup_rules", ignored, func(s *types.ServiceConfig) bool { return len(s.DeviceCgroupRules) > 0 }},
 	{"security_opt", ignored, func(s *types.ServiceConfig) bool { return len(s.SecurityOpt) > 0 }},
 	{"sysctls", ignored, func(s *types.ServiceConfig) bool { return len(s.Sysctls) > 0 }},
-	{"extra_hosts", ignored, func(s *types.ServiceConfig) bool { return len(s.ExtraHosts) > 0 }},
 	{"logging", "wslc has no log drivers; ignored", func(s *types.ServiceConfig) bool { return s.Logging != nil || s.LogDriver != "" }},
 	{"platform", "wslc runs host-architecture images only; ignored", func(s *types.ServiceConfig) bool { return s.Platform != "" }},
 	{"init", ignored, func(s *types.ServiceConfig) bool { return s.Init != nil && *s.Init }},
@@ -117,11 +117,12 @@ type Engine struct {
 	IPRange        bool // network create --ip-range
 	EndpointExtras bool // --link-local-ip and --driver-opt on network connect
 	BuildSecret    bool // wslc build --secret
+	HostGateway    bool // system session run + iptables for host-gateway
 }
 
 // LatestEngine is a current wslc (3.0.3.0 feature floors).
 func LatestEngine() Engine {
-	return Engine{MultiNetwork: true, StaticIPv4: true, IPRange: true, EndpointExtras: true, BuildSecret: true}
+	return Engine{MultiNetwork: true, StaticIPv4: true, IPRange: true, EndpointExtras: true, BuildSecret: true, HostGateway: true}
 }
 
 // Check reports fields the latest known wslc still cannot honor.
@@ -303,6 +304,12 @@ func checkDynamic(name string, s *types.ServiceConfig, eng Engine) []Issue {
 			add(Warn, "networks."+net+".driver_opts", "primary endpoint link-local IPs and driver_opts have no wslc run flag; ignored (they are applied when the network is added with network connect)")
 		}
 	}
+	if len(s.ExtraHosts) > 0 {
+		add(Info, "extra_hosts", "applied with wslc exec after start; the entrypoint may not see the new /etc/hosts lines")
+	}
+	if usesHostGateway(s.ExtraHosts) && !eng.HostGateway {
+		add(Warn, "extra_hosts.host-gateway", "published-port loopback needs a newer wslc (system session run); /etc/hosts is still updated")
+	}
 	for _, v := range s.Volumes {
 		switch v.Type {
 		case types.VolumeTypeBind, types.VolumeTypeVolume, types.VolumeTypeTmpfs:
@@ -335,6 +342,17 @@ func Enforce(issues []Issue, strict bool, w io.Writer) error {
 		return ErrStrict
 	}
 	return nil
+}
+
+func usesHostGateway(h types.HostsList) bool {
+	for _, addrs := range h {
+		for _, addr := range addrs {
+			if strings.EqualFold(strings.TrimSpace(addr), "host-gateway") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func sortedKeys[V any](m map[string]V) []string {

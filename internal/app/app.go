@@ -139,6 +139,7 @@ func (a *App) engine(ctx context.Context) project.Engine {
 		IPRange:        a.caps.AtLeast(wslc.VerEndpoints),
 		EndpointExtras: a.caps.AtLeast(wslc.VerEndpoints),
 		BuildSecret:    a.caps.AtLeast(wslc.VerBuildSecret),
+		HostGateway:    a.caps.AtLeast(wslc.VerHostGateway),
 	}
 	a.engSet = true
 	return a.eng
@@ -151,7 +152,7 @@ func (a *App) noteEngine() {
 		return
 	}
 	a.noted = true
-	a.infof("WARN wslc version unknown; multi-network attach, static IPv4, IP ranges and build --secret are disabled")
+	a.infof("WARN wslc version unknown; multi-network attach, static IPv4, IP ranges, build --secret and host-gateway port loopback are disabled")
 }
 
 // projectState is the directory that holds generated secret and config files

@@ -116,7 +116,11 @@ func (t *Translator) Run(s types.ServiceConfig, o RunOptions) []string {
 		name = ContainerName(t.Project, s, o.Number)
 	}
 	a.add("--name", name)
-	a.add(labels.Flags(labels.Merge(s.Labels, t.Meta.Container(s.Name, o.Number, o.Hash)))...)
+	labs := labels.Merge(s.Labels, t.Meta.Container(s.Name, o.Number, o.Hash))
+	if UsesHostGateway(s.ExtraHosts) {
+		labs[labels.HostGateway] = "v1"
+	}
+	a.add(labels.Flags(labs)...)
 	a.each("-e", append(Env(s.Environment), o.ExtraEnv...))
 	if o.Publish {
 		a.each("-p", Ports(s.Ports))

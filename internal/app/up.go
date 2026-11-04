@@ -124,7 +124,13 @@ func (a *App) converge(ctx context.Context, o UpOptions) (started []string, err 
 			}
 		}
 	}
-	return started, a.handleOrphans(ctx, p, actual, o.RemoveOrphans, o.Timeout)
+	if err := a.handleOrphans(ctx, p, actual, o.RemoveOrphans, o.Timeout); err != nil {
+		return nil, err
+	}
+	if err := a.reconcileGateway(ctx, p, false); err != nil {
+		return nil, err
+	}
+	return started, nil
 }
 
 // applyScale overrides replica counts from `up --scale SERVICE=N`.
@@ -189,16 +195,25 @@ func (a *App) apply(ctx context.Context, t *translate.Translator, s types.Servic
 		return nil
 	case plan.Start:
 		a.infof("Container %s  Starting", op.Name)
-		return a.c.Start(ctx, op.Name)
+		if err := a.c.Start(ctx, op.Name); err != nil {
+			return err
+		}
+		return a.applyExtraHosts(ctx, s, op.Name)
 	case plan.Create:
 		a.infof("Container %s  Creating", op.Name)
-		return a.launch(ctx, t, s, hash, op)
+		if err := a.launch(ctx, t, s, hash, op); err != nil {
+			return err
+		}
+		return a.applyExtraHosts(ctx, s, op.Name)
 	case plan.Recreate:
 		a.infof("Container %s  Recreating", op.Name)
 		if err := remove(); err != nil {
 			return err
 		}
-		return a.launch(ctx, t, s, hash, op)
+		if err := a.launch(ctx, t, s, hash, op); err != nil {
+			return err
+		}
+		return a.applyExtraHosts(ctx, s, op.Name)
 	case plan.Remove:
 		a.infof("Container %s  Removing", op.Name)
 		return remove()
