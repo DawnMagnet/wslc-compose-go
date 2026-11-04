@@ -232,14 +232,14 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 }
 
 func replaceFile(tmp, path string) error {
-	err := os.Rename(tmp, path)
-	if err == nil || runtime.GOOS != "windows" {
-		return err
-	}
-	// Windows will not rename over an existing read-only file.
-	_ = os.Chmod(path, 0o666)
-	if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
-		return err
+	if runtime.GOOS == "windows" {
+		// os.Rename uses MoveFileEx(MOVEFILE_REPLACE_EXISTING). The target
+		// must not be read-only or the replace is rejected. A sharing
+		// violation (the file is mapped into a running container) is not
+		// retried here; that needs a check on a real Windows machine.
+		if _, err := os.Lstat(path); err == nil {
+			_ = os.Chmod(path, 0o666)
+		}
 	}
 	return os.Rename(tmp, path)
 }
@@ -303,18 +303,21 @@ func sanitize(name string) string {
 }
 
 // Remove deletes the project state directory. A missing directory is not an error.
-// Read-only generated files are made removable first so Windows can delete them.
+// On Windows, read-only files are made removable first. Symlinks are left
+// alone so a link is not followed into another tree.
 func Remove(dir string) error {
 	if dir == "" {
 		return nil
 	}
-	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d == nil {
+	if runtime.GOOS == "windows" {
+		_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d == nil || d.Type()&os.ModeSymlink != 0 {
+				return nil
+			}
+			_ = os.Chmod(path, 0o700)
 			return nil
-		}
-		_ = os.Chmod(path, 0o700)
-		return nil
-	})
+		})
+	}
 	err := os.RemoveAll(dir)
 	if os.IsNotExist(err) {
 		return nil

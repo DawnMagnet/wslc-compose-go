@@ -72,7 +72,13 @@ type BuildOptions struct {
 }
 
 // Build builds every selected service that has a build section.
-func (a *App) Build(ctx context.Context, o BuildOptions) error {
+func (a *App) Build(ctx context.Context, o BuildOptions) (err error) {
+	rb := &rollback{}
+	defer func() {
+		if err != nil && !a.c.DryRun() {
+			rb.run(context.WithoutCancel(ctx), a)
+		}
+	}()
 	p, err := a.load(ctx, o.Services, true, false)
 	if err != nil {
 		return err
@@ -82,7 +88,7 @@ func (a *App) Build(ctx context.Context, o BuildOptions) error {
 		a.infof("No services to build")
 		return nil
 	}
-	t, err := a.prepareTranslator(p, nil)
+	t, err := a.prepareTranslator(p, rb)
 	if err != nil {
 		return err
 	}

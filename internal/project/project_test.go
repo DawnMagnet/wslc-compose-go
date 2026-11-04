@@ -3,9 +3,14 @@ package project
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/compose-spec/compose-go/v2/types"
 
 	"github.com/DawnMagnet/wslc-compose-go/internal/golden"
 )
@@ -164,23 +169,28 @@ func TestServiceHash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	NameAnonymousVolumes(p)
 	base := p.Services["api"]
-	h0, _ := ServiceHash(base, "3.0.3")
-	if h1, _ := ServiceHash(base, "3.0.3"); h0 != h1 || len(h0) != 64 {
+	h0, _ := ServiceHash(p, base, LatestEngine())
+	if h1, _ := ServiceHash(p, base, LatestEngine()); h0 != h1 || len(h0) != 64 {
 		t.Fatalf("hash not stable: %s %s", h0, h1)
 	}
-	if legacy, _ := ServiceHash(base, "legacy"); legacy == h0 {
-		t.Fatal("engine tier must change the hash so an older wslc container is recreated")
+	if legacy, _ := ServiceHash(p, base, Engine{}); legacy == h0 {
+		t.Fatal("multi-network on a current wslc must change the hash")
+	}
+	// On wslc 3.0.1 the api command is still the v0.1.5 `run` line.
+	if old, _ := ServiceHash(p, base, Engine{}); old != legacyHash(base) {
+		t.Fatalf("legacy engine hash %s, v0.1.5 %s", old, legacyHash(base))
 	}
 	changed := base
 	changed.Image = "example/api:2.0"
-	if h, _ := ServiceHash(changed, "3.0.3"); h == h0 {
+	if h, _ := ServiceHash(p, changed, LatestEngine()); h == h0 {
 		t.Fatal("image change must change the hash")
 	}
 	env := base
 	v := "x"
 	env.Environment = map[string]*string{"NEW": &v}
-	if h, _ := ServiceHash(env, "3.0.3"); h == h0 {
+	if h, _ := ServiceHash(p, env, LatestEngine()); h == h0 {
 		t.Fatal("environment change must change the hash")
 	}
 	scaled := base
@@ -191,15 +201,40 @@ func TestServiceHash(t *testing.T) {
 	scaled.Deploy = &deploy
 	scaled.PullPolicy = "always"
 	scaled.DependsOn = nil
-	if h, _ := ServiceHash(scaled, "3.0.3"); h != h0 {
+	if h, _ := ServiceHash(p, scaled, LatestEngine()); h != h0 {
 		t.Fatal("scale/pull_policy/depends_on must not change the hash")
-	}
-	if LatestEngine().Tier() != "3.0.3" || (Engine{}).Tier() != "legacy" {
-		t.Fatal("tier mapping")
 	}
 	if *base.Deploy.Replicas != 2 {
 		t.Fatal("ServiceHash must not mutate its input")
 	}
+
+	mini, err := Load(context.Background(), *load(t, "minimal.yaml", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	NameAnonymousVolumes(mini)
+	hello := mini.Services["hello"]
+	const want = "0df62ea0f7a4228c79ebe55b0d198f8ce5de02a73ed48a3d6d6d15a7257493bc"
+	for _, eng := range []Engine{{}, LatestEngine()} {
+		got, err := ServiceHash(mini, hello, eng)
+		if err != nil || got != want {
+			t.Fatalf("engine %+v hash %s, want %s (%v)", eng, got, want, err)
+		}
+	}
+	db := p.Services["db"]
+	if got, _ := ServiceHash(p, db, LatestEngine()); got != legacyHash(db) {
+		t.Fatalf("single-network db hash changed: %s", got)
+	}
+}
+
+func legacyHash(s types.ServiceConfig) string {
+	s = stripHash(s)
+	b, err := json.Marshal(s)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 func TestNameAnonymousVolumes(t *testing.T) {

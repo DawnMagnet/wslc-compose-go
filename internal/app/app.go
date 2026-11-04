@@ -146,14 +146,31 @@ func (a *App) engine(ctx context.Context) project.Engine {
 	return a.eng
 }
 
+// versionUnknown is a real run whose `wslc --version` could not be read.
+// Dry-run assumes a current binary instead.
+func (a *App) versionUnknown() bool {
+	return a.engSet && !a.caps.Known && !a.caps.Assumed
+}
+
+// hashEngine is the capability set mixed into config hashes. An unknown
+// version does not fall back to the legacy tier: callers skip recreation
+// instead, so an existing container keeps the hash it was created with.
+func (a *App) hashEngine() project.Engine {
+	if a.versionUnknown() {
+		return project.Engine{}
+	}
+	return a.eng
+}
+
 // noteEngine warns once when a real run could not read wslc's version and
-// therefore left gated features off. `config` stays quiet: it never calls this.
+// therefore left gated features off. Existing containers are not recreated.
+// `config` stays quiet: it never calls this.
 func (a *App) noteEngine() {
 	if a.noted || a.caps.Known || a.caps.Assumed {
 		return
 	}
 	a.noted = true
-	a.infof("WARN wslc version unknown; multi-network attach, static IPv4, IP ranges, build --secret and host-gateway port loopback are disabled")
+	a.infof("WARN wslc version unknown; multi-network attach, static IPv4, IP ranges, build --secret and host-gateway port loopback are disabled. Existing containers will not be recreated")
 }
 
 // projectState is the directory that holds generated secret and config files

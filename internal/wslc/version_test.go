@@ -47,4 +47,12 @@ func TestParseCapabilities(t *testing.T) {
 	if ParseCapabilities("wslc version 3.0.3.0-rc1").AtLeast("3.0.3.0-rc1") != true {
 		t.Fatal("a pre-release is at least itself")
 	}
+	rc10 := ParseCapabilities("wslc version 3.0.3.0-rc10")
+	rc2 := ParseCapabilities("wslc version 3.0.3.0-rc2")
+	if !rc10.AtLeast("3.0.3.0-rc2") || rc2.AtLeast("3.0.3.0-rc10") {
+		t.Fatal("rc10 must be newer than rc2")
+	}
+	if rc10.AtLeast(VerEndpoints) || rc2.AtLeast(VerEndpoints) {
+		t.Fatal("pre-releases of 3.0.3.0 are below the release")
+	}
 }

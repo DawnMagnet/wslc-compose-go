@@ -101,7 +101,7 @@ func (a *App) converge(ctx context.Context, o UpOptions) (started []string, err 
 		if err := a.waitDeps(ctx, p, s, o.WaitTimeout); err != nil {
 			return nil, err
 		}
-		hash, err := project.ServiceHash(s, a.eng.Tier())
+		hash, err := project.ServiceHash(p, s, a.hashEngine())
 		if err != nil {
 			return nil, err
 		}
@@ -110,7 +110,7 @@ func (a *App) converge(ctx context.Context, o UpOptions) (started []string, err 
 			return nil, err
 		}
 		ops := plan.Service(plan.Desired{Service: name, Hash: hash, Names: replicas}, actual,
-			plan.Options{ForceRecreate: o.ForceRecreate || rebuilt[name], NoRecreate: o.NoRecreate})
+			plan.Options{ForceRecreate: o.ForceRecreate || rebuilt[name], NoRecreate: o.NoRecreate || a.versionUnknown()})
 		for _, op := range ops {
 			if op.Action == plan.Create || op.Action == plan.Recreate {
 				// Registered first: a failed `run` may still leave a container behind.

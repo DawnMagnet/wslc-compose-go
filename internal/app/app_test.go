@@ -42,16 +42,13 @@ func TestUpNetworksGolden(t *testing.T) {
 		t.Fatalf("up: %v\n%s", err, h.stderr.String())
 	}
 	golden.Assert(t, "up_networks.golden", h.fake.mutations())
-	h.stdout.Reset()
-	h.fake.calls = nil
-	h.app.o.DryRun = true
-	// Rebuild the client so dry-run prints; New is the supported way.
-	h.app = New(h.app.o, h.fake, golden.Paths, wslc.IO{Stdout: &h.stdout, Stderr: &h.stderr})
-	h.fake.calls = nil
-	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+	dry := newHarness(t, "networks.yaml", func(o *Options) { o.DryRun = true })
+	dry.fake.networks = []string{"already"}
+	dry.fake.images["alpine"] = true
+	if err := dry.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
 		t.Fatal(err)
 	}
-	golden.Assert(t, "dryrun_networks.golden", hashRE.ReplaceAllString(h.stdout.String(), "config-hash=<hash>"))
+	golden.Assert(t, "dryrun_networks.golden", hashRE.ReplaceAllString(dry.stdout.String(), "config-hash=<hash>"))
 }
 
 func TestUpNetworksDegradeOnOldWslc(t *testing.T) {
@@ -313,6 +310,96 @@ func TestUpRollbackRemovesNewState(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(h.app.o.StateDir, "sec")); !os.IsNotExist(err) {
 		t.Fatalf("rollback left state dir: %v", err)
+	}
+}
+
+func TestUnchangedHashSurvivesUpgrade(t *testing.T) {
+	const helloHash = "0df62ea0f7a4228c79ebe55b0d198f8ce5de02a73ed48a3d6d6d15a7257493bc"
+	for _, version := range []string{"wslc version 3.0.1.0", "wslc version 3.0.3.0"} {
+		h := newHarness(t, "minimal.yaml", nil)
+		h.fake.version = version
+		h.fake.networks = []string{"minimal_default"}
+		h.fake.images["nginx:alpine"] = true
+		h.fake.containers = append(h.fake.containers, container("minimal", "hello", 1, helloHash, true))
+		if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+			t.Fatalf("%s: %v\n%s", version, err, h.stderr.String())
+		}
+		if m := h.fake.mutations(); m != "" {
+			t.Fatalf("%s recreated an unchanged container:\n%s", version, m)
+		}
+	}
+}
+
+func TestUnknownVersionDoesNotRecreate(t *testing.T) {
+	h := newHarness(t, "networks.yaml", nil)
+	h.fake.networks = []string{"already"}
+	h.fake.images["alpine"] = true
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("create: %v\n%s", err, h.stderr.String())
+	}
+	h.fake.calls = nil
+	h.reopen()
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("3.0.3 baseline: %v\n%s", err, h.stderr.String())
+	}
+	if m := h.fake.mutations(); m != "" {
+		t.Fatalf("3.0.3 baseline mutated:\n%s", m)
+	}
+	h.fake.version = "not a version"
+	h.fake.calls = nil
+	h.reopen()
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("unknown version: %v\n%s", err, h.stderr.String())
+	}
+	if m := h.fake.mutations(); m != "" {
+		t.Fatalf("unknown version recreated containers:\n%s", m)
+	}
+	if !strings.Contains(h.stderr.String(), "will not be recreated") {
+		t.Fatalf("missing warning:\n%s", h.stderr.String())
+	}
+	h.fake.version = "wslc version 3.0.3.0"
+	h.fake.calls = nil
+	h.reopen()
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("recovered: %v\n%s", err, h.stderr.String())
+	}
+	if m := h.fake.mutations(); m != "" {
+		t.Fatalf("recovered version mutated:\n%s", m)
+	}
+
+	strict := newHarness(t, "networks.yaml", func(o *Options) { o.Strict = true })
+	strict.fake.version = "not a version"
+	strict.fake.networks = []string{"already"}
+	strict.fake.images["alpine"] = true
+	if err := strict.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); !errors.Is(err, project.ErrStrict) {
+		t.Fatalf("strict + unknown version: %v", err)
+	}
+}
+
+func TestRunAndBuildFailureRemoveState(t *testing.T) {
+	h := newHarness(t, "secrets.yaml", func(o *Options) {
+		o.Env = []string{"API_KEY=s3cret-value"}
+	})
+	h.fake.images["alpine"] = true
+	h.fake.images["busybox"] = true
+	h.fake.networks = []string{"sec_default"}
+	h.fake.failRun = "oneoff"
+	if err := h.app.Run(ctx, RunOptions{Service: "app", NoDeps: true, NoTTY: true, Name: "oneoff"}); err == nil {
+		t.Fatal("run must fail")
+	}
+	if _, err := os.Stat(filepath.Join(h.app.o.StateDir, "sec")); !os.IsNotExist(err) {
+		t.Fatalf("failed run left state dir: %v", err)
+	}
+
+	h = newHarness(t, "secrets.yaml", func(o *Options) {
+		o.Env = []string{"API_KEY=s3cret-value"}
+	})
+	h.fake.failBuild = true
+	if err := h.app.Build(ctx, BuildOptions{}); err == nil {
+		t.Fatal("build must fail")
+	}
+	if _, err := os.Stat(filepath.Join(h.app.o.StateDir, "sec")); !os.IsNotExist(err) {
+		t.Fatalf("failed build left state dir: %v", err)
 	}
 }
 

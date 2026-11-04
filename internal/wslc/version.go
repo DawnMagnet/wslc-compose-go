@@ -95,16 +95,77 @@ func (c Capabilities) AtLeast(dotted string) bool {
 		}
 	}
 	// Equal numbers: a pre-release is older than the release itself.
-	if c.pre != "" && want.pre == "" {
-		return false
+	return cmpPre(c.pre, want.pre) >= 0
+}
+
+// cmpPre compares pre-release identifiers. An empty identifier is a release
+// and is greater than any pre-release. Numeric chunks compare as integers,
+// so rc10 is newer than rc2.
+func cmpPre(a, b string) int {
+	switch {
+	case a == "" && b == "":
+		return 0
+	case a == "":
+		return 1
+	case b == "":
+		return -1
 	}
-	if c.pre == "" && want.pre != "" {
-		return true
+	as, bs := splitPre(a), splitPre(b)
+	n := max(len(as), len(bs))
+	for i := 0; i < n; i++ {
+		if i >= len(as) {
+			return -1
+		}
+		if i >= len(bs) {
+			return 1
+		}
+		an, aerr := strconv.Atoi(as[i])
+		bn, berr := strconv.Atoi(bs[i])
+		switch {
+		case aerr == nil && berr == nil && an != bn:
+			return an - bn
+		case aerr == nil && berr == nil:
+			continue
+		case aerr == nil && berr != nil:
+			return -1 // numeric identifiers have lower precedence
+		case aerr != nil && berr == nil:
+			return 1
+		}
+		if as[i] != bs[i] {
+			return strings.Compare(as[i], bs[i])
+		}
 	}
-	if c.pre != want.pre {
-		return c.pre > want.pre
+	return 0
+}
+
+func splitPre(s string) []string {
+	var out []string
+	var cur strings.Builder
+	var kind int // 0 unset, 1 digit, 2 other
+	flush := func() {
+		if cur.Len() > 0 {
+			out = append(out, cur.String())
+			cur.Reset()
+		}
 	}
-	return true
+	for _, r := range s {
+		next := 2
+		if r == '.' {
+			flush()
+			kind = 0
+			continue
+		}
+		if r >= '0' && r <= '9' {
+			next = 1
+		}
+		if kind != 0 && next != kind {
+			flush()
+		}
+		kind = next
+		cur.WriteRune(r)
+	}
+	flush()
+	return out
 }
 
 // String is the version text, or "unknown".

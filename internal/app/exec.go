@@ -83,7 +83,13 @@ type RunOptions struct {
 
 // Run starts a one-off container for a service, bringing up its
 // dependencies first unless NoDeps is set.
-func (a *App) Run(ctx context.Context, o RunOptions) error {
+func (a *App) Run(ctx context.Context, o RunOptions) (err error) {
+	rb := &rollback{}
+	defer func() {
+		if err != nil && !a.c.DryRun() {
+			rb.run(context.WithoutCancel(ctx), a)
+		}
+	}()
 	p, err := a.load(ctx, []string{o.Service}, o.NoDeps, false)
 	if err != nil {
 		return err
@@ -104,7 +110,7 @@ func (a *App) Run(ctx context.Context, o RunOptions) error {
 	if err != nil {
 		return err
 	}
-	tr, err := a.prepareTranslator(p, nil)
+	tr, err := a.prepareTranslator(p, rb)
 	if err != nil {
 		return err
 	}
@@ -123,7 +129,7 @@ func (a *App) Run(ctx context.Context, o RunOptions) error {
 	if err := translate.ValidateServiceNetworks(p); err != nil {
 		return err
 	}
-	hash, err := project.ServiceHash(s, a.eng.Tier())
+	hash, err := project.ServiceHash(p, s, a.hashEngine())
 	if err != nil {
 		return err
 	}

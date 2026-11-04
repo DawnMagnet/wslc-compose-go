@@ -32,6 +32,7 @@ type fakeWSLC struct {
 	logs        map[string]string
 	exited      map[string]int            // containers that report exited with this code
 	failRun     string                    // `run` of this container name fails
+	failBuild   bool                      // `build` fails
 	failSession bool                      // `system session run` fails
 	version     string                    // `wslc --version` text; empty means 3.0.3.0
 	runtime     map[string]map[string]any // extra inspect fields keyed by container name
@@ -77,6 +78,9 @@ func (f *fakeWSLC) Run(ctx context.Context, args []string, stdio wslc.IO) error 
 	if args[0] == "run" && f.failRun != "" && slices.Contains(args, f.failRun) {
 		return errors.New("invalid volume spec")
 	}
+	if args[0] == "build" && f.failBuild {
+		return errors.New("build failed")
+	}
 	switch args[0] {
 	case "list":
 		return json.NewEncoder(out).Encode(f.containers)
@@ -107,13 +111,68 @@ func (f *fakeWSLC) Run(ctx context.Context, args []string, stdio wslc.IO) error 
 		}
 		fmt.Fprintln(out, v)
 	}
-	if f.track && (args[0] == "run" || args[0] == "create") {
-		f.remember(args)
-	}
 	if f.failSession && len(args) >= 2 && args[0] == "system" && args[1] == "session" {
 		return errors.New("iptables failed")
 	}
+	f.observe(args)
 	return nil
+}
+
+// observe updates the fake's view of containers, networks, volumes and images
+// after a successful mutation so a later command in the same test sees them.
+func (f *fakeWSLC) observe(args []string) {
+	switch args[0] {
+	case "run", "create":
+		f.remember(args)
+	case "remove":
+		f.forget(args[len(args)-1])
+	case "pull":
+		if len(args) > 1 {
+			if f.images == nil {
+				f.images = map[string]bool{}
+			}
+			f.images[args[1]] = true
+		}
+	case "build":
+		for i := 0; i < len(args)-1; i++ {
+			if args[i] == "-t" {
+				if f.images == nil {
+					f.images = map[string]bool{}
+				}
+				f.images[args[i+1]] = true
+			}
+		}
+	case "network":
+		if len(args) < 3 {
+			return
+		}
+		name := args[len(args)-1]
+		switch args[1] {
+		case "create":
+			f.networks = append(f.networks, name)
+		case "remove":
+			f.networks = slices.DeleteFunc(f.networks, func(n string) bool { return n == name })
+		}
+	case "volume":
+		if len(args) < 3 {
+			return
+		}
+		name := args[len(args)-1]
+		switch args[1] {
+		case "create":
+			f.volumes = append(f.volumes, name)
+		case "remove":
+			f.volumes = slices.DeleteFunc(f.volumes, func(n string) bool { return n == name })
+		}
+	}
+}
+
+func (f *fakeWSLC) forget(name string) {
+	f.containers = slices.DeleteFunc(f.containers, func(m map[string]any) bool {
+		n, _ := m["Name"].(string)
+		id, _ := m["Id"].(string)
+		return n == name || id == name
+	})
 }
 
 // remember keeps a container created by run/create so a later list/inspect
@@ -172,6 +231,7 @@ func container(project, service string, n int, hash string, running bool) map[st
 type harness struct {
 	app    *App
 	fake   *fakeWSLC
+	paths  func(string) string
 	stdout bytes.Buffer
 	stderr bytes.Buffer
 }
@@ -196,8 +256,17 @@ func newHarness(t *testing.T, file string, mod func(*Options)) *harness {
 		}
 		return golden.Paths(p)
 	}
+	h.paths = mapPath
 	h.app = New(o, h.fake, mapPath, wslc.IO{Stdout: &h.stdout, Stderr: &h.stderr})
 	return h
+}
+
+// reopen rebuilds the App so a new wslc version probe is taken. The fake's
+// containers and resources are kept.
+func (h *harness) reopen() {
+	h.stdout.Reset()
+	h.stderr.Reset()
+	h.app = New(h.app.o, h.fake, h.paths, wslc.IO{Stdout: &h.stdout, Stderr: &h.stderr})
 }
 
 func hashOf(t *testing.T, h *harness, service string) string {

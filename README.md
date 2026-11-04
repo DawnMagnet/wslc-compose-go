@@ -339,9 +339,13 @@ See [`testdata/golden/`](testdata/golden); `up_full.golden` covers nearly every 
   The exception is generated secret/config files (`environment:` and `content:`), which live under
   `$XDG_CONFIG_HOME/wslc-compose/<project>` (or `%LOCALAPPDATA%\wslc-compose\<project>` on Windows) and are deleted by `down`.
   `file:` sources are mounted in place and are not copied.
-- **Config hash.** JSON + SHA-256 of a document that includes a translation schema version, the wslc capability tier (`3.0.3` or `legacy`), and the service config, excluding `build`, `pull_policy`, `scale`/`replicas`,
-  `depends_on` and `profiles`, so changing replica counts or dependencies does not recreate containers;
-  services rebuilt by `up --build` are always recreated. Inspect with `wslc-compose config --hash "*"`.
+- **Config hash.** JSON + SHA-256 of the service config, excluding `build`, `pull_policy`, `scale`/`replicas`,
+  `depends_on` and `profiles`, so changing replica counts or dependencies does not recreate containers.
+  A service whose wslc command is unchanged from v0.1.5 keeps that historical digest (`minimal.yaml` hello is
+  `0df62ea0…`), so upgrading does not recreate it. Schema version 2 and the `3.0.3` tier are mixed in only when
+  the service uses a feature whose command changed (secrets, configs, extra_hosts, or, on wslc 3.0.3.0, multiple
+  networks, static IPv4, `ip_range`, secondary endpoint options, `build.secrets`).
+  Services rebuilt by `up --build` are always recreated. Inspect with `wslc-compose config --hash "*"`.
 - **Default DNS 1.1.1.1.** The wslc utility VM forwards DNS to the Windows host resolver; on many LAN/corporate
   networks containers then get `SERVFAIL` for public names (apt/npm/pip fail). Services without `dns:` therefore
   get `--dns 1.1.1.1`; for internal names set `dns:`, `--default-dns=10.0.0.53`, or disable with `--default-dns=`.
@@ -741,8 +745,11 @@ wslc.exe network remove minimal_default
   例外是 `environment:` / `content:` 生成的 secret 和 config 文件，放在
   `$XDG_CONFIG_HOME/wslc-compose/<project>`（Windows 上为 `%LOCALAPPDATA%\wslc-compose\<project>`），由 `down` 删除。
   `file:` 来源按原路径挂载，不复制。
-- **配置哈希。** 对「翻译模式版本 + wslc 能力档（`3.0.3` 或 `legacy`）+ 服务配置」做 JSON + SHA-256，排除 `build`、`pull_policy`、`scale`/`replicas`、`depends_on`、
-  `profiles`，避免只调整副本数或依赖时重建容器；`up --build` 重新构建过的服务会强制重建。
+- **配置哈希。** 对服务配置做 JSON + SHA-256，排除 `build`、`pull_policy`、`scale`/`replicas`、`depends_on`、
+  `profiles`，避免只调整副本数或依赖时重建容器。命令与 v0.1.5 相同的服务保持原来的摘要（`minimal.yaml` 的 hello 为
+  `0df62ea0…`），升级不会重建。只有用到新翻译的服务（secrets、configs、extra_hosts，以及在 wslc 3.0.3.0 上的多网络、
+  静态 IPv4、`ip_range`、次要端点选项、`build.secrets`）才会把模式版本 2 和能力档混进哈希。
+  `up --build` 重新构建过的服务会强制重建。
   `wslc-compose config --hash "*"` 可查看。
 - **默认 DNS 1.1.1.1。** wslc 的工具 VM 把 DNS 转发到 Windows 主机解析器；在很多局域网/企业网络里，
   容器内解析公网域名会得到 `SERVFAIL`（apt/npm/pip 失败）。因此对未声明 `dns:` 的服务注入 `--dns 1.1.1.1`；

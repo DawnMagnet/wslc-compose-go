@@ -10,10 +10,13 @@
   directory is under `%LOCALAPPDATA%`, and file modes are not asserted as Unix
   bits. A failed `up` removes a state directory it created. `down` still
   removes networks and that directory when host-gateway cleanup fails.
-- Config hashes include a translation schema version and the wslc capability
-  tier, so containers created by v0.1.5 or by an older wslc are recreated
-  after an upgrade. wslc 3.0.1 command sequences for `up`/`down` of the
-  minimal and full examples stay byte-identical to v0.1.5.
+- Config hashes stay identical to v0.1.5 for services whose wslc command did
+  not change (for example `minimal.yaml` hello is `0df62ea0…`). Schema version
+  2 and the 3.0.3 tier are mixed in only when that service uses a newly
+  translated feature, and only the tier when the command actually depends on
+  the wslc version. An unreadable `wslc --version` does not recreate existing
+  containers; gated features on new containers are skipped (or rejected with
+  `--strict`). A failed `run` or `build` removes a state directory it created.
 
 ### Added
 
