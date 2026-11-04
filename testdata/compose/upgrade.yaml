@@ -14,6 +14,9 @@ services:
   extsec:
     image: alpine
     secrets: [outside]
+  extcfg:
+    image: alpine
+    configs: [outside_cfg]
   ranged:
     image: alpine
     networks: [pool]
@@ -27,6 +30,9 @@ secrets:
     external: true
   tok:
     file: ./api.env
+configs:
+  outside_cfg:
+    external: true
 networks:
   a:
     ipam:

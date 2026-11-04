@@ -100,6 +100,11 @@ func (a *App) load(ctx context.Context, services []string, noDeps, quiet bool) (
 	if err != nil {
 		return nil, err
 	}
+	// After the version probe and field policy, before any mutation. config
+	// uses loadRaw and is not affected.
+	if a.versionUnknown() && a.o.Strict {
+		return nil, fmt.Errorf("wslc version unknown (--strict): %w", project.ErrStrict)
+	}
 	project.NameAnonymousVolumes(p)
 	return p, nil
 }

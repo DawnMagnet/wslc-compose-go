@@ -236,6 +236,16 @@ func TestServiceHash(t *testing.T) {
 	if got, _ := ServiceHash(ep, ext, LatestEngine()); got == legacyHash(ext) {
 		t.Fatal("file secret must change the hash")
 	}
+	cfg := types.ServiceConfig{Name: "cfg"}
+	cfg.Configs = []types.ServiceConfigObjConfig{types.ServiceConfigObjConfig(types.FileReferenceConfig{Source: "out"})}
+	cp := &types.Project{Services: types.Services{"cfg": cfg}, Configs: types.Configs{"out": {External: true}}}
+	if got, _ := ServiceHash(cp, cfg, LatestEngine()); got != legacyHash(cfg) {
+		t.Fatal("external config must not change the hash")
+	}
+	cp.Configs["out"] = types.ConfigObjConfig{File: "cfg.txt"}
+	if got, _ := ServiceHash(cp, cfg, LatestEngine()); got == legacyHash(cfg) {
+		t.Fatal("file config must change the hash")
+	}
 	ranged := types.ServiceConfig{Name: "ranged"}
 	ranged.Networks = map[string]*types.ServiceNetworkConfig{"pool": {}}
 	rp := &types.Project{

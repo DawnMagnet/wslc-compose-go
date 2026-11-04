@@ -98,6 +98,9 @@ func (a *App) Run(ctx context.Context, o RunOptions) (err error) {
 	if err != nil {
 		return err
 	}
+	if err := a.checkNetworks(p); err != nil {
+		return err
+	}
 	a.noteEngine()
 	if deps := s.GetDependencies(); len(deps) > 0 && !o.NoDeps {
 		if err := a.Up(ctx, UpOptions{Services: deps, Detach: true, Build: o.Build, Timeout: -1}); err != nil {
@@ -125,9 +128,6 @@ func (a *App) Run(ctx context.Context, o RunOptions) (err error) {
 	}
 	if o.Entrypoint != nil {
 		s.Entrypoint = o.Entrypoint
-	}
-	if err := a.checkNetworks(p); err != nil {
-		return err
 	}
 	hash, err := project.ServiceHash(p, s, a.hashEngine())
 	if err != nil {

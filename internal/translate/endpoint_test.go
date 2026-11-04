@@ -74,15 +74,53 @@ func TestValidateServiceNetworks(t *testing.T) {
 		t.Fatalf("scale: %v", err)
 	}
 	lone := types.ServiceConfig{Name: "a"}
+	lone.Networks = map[string]*types.ServiceNetworkConfig{"n": {}}
 	badRange := &types.Project{
 		Services: types.Services{"a": lone},
 		Networks: types.Networks{"n": {Ipam: types.IPAMConfig{Config: []*types.IPAMPool{{Subnet: "10.0.0.0/24", IPRange: "10.1.0.0/24"}}}}},
 	}
-	if _, err := ValidateServiceNetworks(badRange, true); err == nil || !strings.Contains(err.Error(), "ip_range") {
-		t.Fatalf("ip_range: %v", err)
+	// No static address: the subnet is still handed to wslc, on every version.
+	if warns, err := ValidateServiceNetworks(badRange, true); err != nil || len(warns) == 0 || !strings.Contains(warns[0], "ip_range") {
+		t.Fatalf("pool without a static address must warn: warns=%v err=%v", warns, err)
 	}
 	if warns, err := ValidateServiceNetworks(badRange, false); err != nil || len(warns) == 0 || !strings.Contains(warns[0], "ip_range") {
 		t.Fatalf("old wslc should warn, not fail: warns=%v err=%v", warns, err)
+	}
+	lone.Networks["n"].Ipv4Address = "10.0.0.10"
+	if _, err := ValidateServiceNetworks(badRange, true); err == nil || !strings.Contains(err.Error(), "ip_range") {
+		t.Fatalf("static address makes the pool a hard error: %v", err)
+	}
+	v6 := serviceOn("web", "n", "")
+	v6p := &types.Project{
+		Services: types.Services{"web": v6},
+		Networks: types.Networks{"n": {Ipam: types.IPAMConfig{Config: []*types.IPAMPool{{Subnet: "fd00:1::/64"}}}}},
+	}
+	if warns, err := ValidateServiceNetworks(v6p, true); err != nil || len(warns) == 0 || !strings.Contains(warns[0], "invalid IPv4 subnet") {
+		t.Fatalf("ipv6 subnet: warns=%v err=%v", warns, err)
+	}
+	slash := serviceOn("web", "n", "")
+	slashp := &types.Project{
+		Services: types.Services{"web": slash},
+		Networks: types.Networks{"n": {Ipam: types.IPAMConfig{Config: []*types.IPAMPool{{Subnet: "10.0.0.0/31"}}}}},
+	}
+	if warns, err := ValidateServiceNetworks(slashp, true); err != nil || len(warns) == 0 || !strings.Contains(warns[0], "broadcast") {
+		t.Fatalf("/31: warns=%v err=%v", warns, err)
+	}
+	ext := serviceOn("web", "ext", "10.9.9.9")
+	extp := &types.Project{
+		Services: types.Services{"web": ext},
+		Networks: types.Networks{"ext": {External: true, Ipam: types.IPAMConfig{Config: []*types.IPAMPool{{Subnet: "fd00:1::/64"}}}}},
+	}
+	if warns, err := ValidateServiceNetworks(extp, true); err != nil || len(warns) != 0 {
+		t.Fatalf("external network: warns=%v err=%v", warns, err)
+	}
+	idle := types.ServiceConfig{Name: "web"}
+	idlep := &types.Project{
+		Services: types.Services{"web": idle},
+		Networks: types.Networks{"n": {Ipam: types.IPAMConfig{Config: []*types.IPAMPool{{Subnet: "10.0.0.0/32"}}}}},
+	}
+	if warns, err := ValidateServiceNetworks(idlep, true); err != nil || len(warns) != 0 {
+		t.Fatalf("unused network: warns=%v err=%v", warns, err)
 	}
 	gwSvc := types.ServiceConfig{Name: "a"}
 	gwSvc.Networks = map[string]*types.ServiceNetworkConfig{"n": {Ipv4Address: "10.0.0.1"}}
@@ -93,6 +131,12 @@ func TestValidateServiceNetworks(t *testing.T) {
 	if _, err := ValidateServiceNetworks(gw, true); err == nil || !strings.Contains(err.Error(), "gateway") {
 		t.Fatalf("gateway address: %v", err)
 	}
+}
+
+func serviceOn(name, network, ip string) types.ServiceConfig {
+	s := types.ServiceConfig{Name: name}
+	s.Networks = map[string]*types.ServiceNetworkConfig{network: {Ipv4Address: ip}}
+	return s
 }
 
 func contains(ss []string, v string) bool {

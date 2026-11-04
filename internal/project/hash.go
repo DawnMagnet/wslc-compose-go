@@ -62,10 +62,11 @@ func stripHash(s types.ServiceConfig) types.ServiceConfig {
 // wslc version (multi-network attach, static IPv4, secondary endpoint
 // options). ip_range and build.secrets do not change the run command, and
 // external secrets are not mounted, so none of those bump the digest.
-// File-backed secrets, configs and extra_hosts change the command on every
-// version, so they bump the schema without a tier.
+// File-backed secrets and configs, and extra_hosts, change the command on
+// every version, so they bump the schema without a tier. External configs
+// are not mounted.
 func translationDelta(p *types.Project, s types.ServiceConfig, eng Engine) (schema bool, tier string) {
-	if mountedSecret(p, s) || len(s.Configs) > 0 || len(s.ExtraHosts) > 0 {
+	if mountedSecret(p, s) || mountedConfig(p, s) || len(s.ExtraHosts) > 0 {
 		schema = true
 	}
 	if s.NetworkMode != "" {
@@ -97,6 +98,22 @@ func mountedSecret(p *types.Project, s types.ServiceConfig) bool {
 		}
 		sec, ok := p.Secrets[ref.Source]
 		if !ok || !bool(sec.External) {
+			return true
+		}
+	}
+	return false
+}
+
+// mountedConfig reports whether s bind-mounts a config. External configs are
+// not mounted, so they do not change the run command.
+func mountedConfig(p *types.Project, s types.ServiceConfig) bool {
+	for _, raw := range s.Configs {
+		ref := types.FileReferenceConfig(raw)
+		if p == nil {
+			return true
+		}
+		cfg, ok := p.Configs[ref.Source]
+		if !ok || !bool(cfg.External) {
 			return true
 		}
 	}

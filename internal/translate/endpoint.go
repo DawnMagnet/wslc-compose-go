@@ -63,24 +63,64 @@ func endpointAliases(s types.ServiceConfig, key string) []string {
 
 // ValidateServiceNetworks checks static addresses and IPAM.
 // Address checks run only when staticIP is set, because older wslc builds
-// never receive --ip and v0.1.5 only warned. Pool problems are errors when
-// staticIP is set (the addresses are sent to wslc) and warnings otherwise.
+// never receive --ip and v0.1.5 only warned. A pool is a hard error only
+// when this process will create that network and a service puts a static
+// IPv4 address on it. Every other pool problem is a warning, and the subnet
+// is still passed to wslc. External networks are not validated.
 func ValidateServiceNetworks(p *types.Project, staticIP bool) (warnings []string, err error) {
 	if staticIP {
 		if err = validateAddresses(p); err != nil {
 			return nil, err
 		}
 	}
-	var pools []string
-	for _, key := range slices.Sorted(maps.Keys(p.Networks)) {
-		if msg := poolProblem(key, p.Networks[key]); msg != "" {
-			pools = append(pools, msg)
+	staticOn := map[string]bool{}
+	if staticIP {
+		for _, name := range p.ServiceNames() {
+			s := p.Services[name]
+			if s.NetworkMode != "" {
+				continue
+			}
+			for key, cfg := range s.Networks {
+				if cfg != nil && cfg.Ipv4Address != "" {
+					staticOn[key] = true
+				}
+			}
 		}
 	}
-	if staticIP && len(pools) > 0 {
-		return nil, fmt.Errorf("%s", pools[0])
+	for _, key := range slices.Sorted(maps.Keys(p.Networks)) {
+		n := p.Networks[key]
+		if bool(n.External) || !networkUsed(p, key) {
+			continue
+		}
+		msg := poolProblem(key, n)
+		if msg == "" {
+			continue
+		}
+		if staticOn[key] {
+			return nil, fmt.Errorf("%s", msg)
+		}
+		warnings = append(warnings, msg)
 	}
-	return pools, nil
+	return warnings, nil
+}
+
+func networkUsed(p *types.Project, key string) bool {
+	for _, name := range p.ServiceNames() {
+		s := p.Services[name]
+		if s.NetworkMode != "" {
+			continue
+		}
+		if len(s.Networks) == 0 {
+			if key == "default" {
+				return true
+			}
+			continue
+		}
+		if _, ok := s.Networks[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func validateAddresses(p *types.Project) error {
@@ -107,6 +147,9 @@ func validateAddresses(p *types.Project) error {
 				return fmt.Errorf("service %q network %q: ipv4_address %s is also requested by %s", name, key, ip, other)
 			}
 			seen[id] = name
+			if n := p.Networks[key]; bool(n.External) {
+				continue
+			}
 			if err := addressInNetwork(name, key, ip, p.Networks[key]); err != nil {
 				return err
 			}

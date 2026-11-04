@@ -69,9 +69,6 @@ func (a *App) converge(ctx context.Context, o UpOptions) (started []string, err 
 	if err := a.checkNetworks(p); err != nil {
 		return nil, err
 	}
-	if a.versionUnknown() && a.o.Strict {
-		return nil, fmt.Errorf("wslc version unknown (--strict): %w", project.ErrStrict)
-	}
 	rb := &rollback{}
 	defer func() {
 		if err != nil && !a.c.DryRun() {
@@ -113,8 +110,19 @@ func (a *App) converge(ctx context.Context, o UpOptions) (started []string, err 
 			return nil, err
 		}
 		if a.versionUnknown() {
+			legacy, err := project.ServiceHash(p, s, project.Engine{})
+			if err != nil {
+				return nil, err
+			}
+			current, err := project.ServiceHash(p, s, project.LatestEngine())
+			if err != nil {
+				return nil, err
+			}
 			for _, act := range actual {
-				if act.Service == name && act.Hash != "" && act.Hash != hash {
+				// A container created on 3.0.1 or 3.0.3 for this same config
+				// still matches one of the two digests. Only a real config
+				// change (neither digest) is worth a warning.
+				if act.Service == name && act.Hash != "" && act.Hash != legacy && act.Hash != current {
 					a.infof("WARN service %s: wslc version unknown; changes were not applied", name)
 					break
 				}

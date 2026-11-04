@@ -14,12 +14,19 @@
   did not change (`minimal.yaml` hello is `0df62ea0…`). Schema version 2 is
   added for mounted secrets, configs and extra_hosts. The 3.0.3 tier is added
   only for multi-network, static IPv4 and secondary endpoint options.
-  `ip_range`, `build.secrets` and external secrets do not change the hash.
-  On wslc 3.0.1, static addresses and invalid IPAM are warnings, as in v0.1.5,
-  not errors. An unreadable `wslc --version` does not recreate containers; a
-  service whose config changed is named in a warning, and `--strict` rejects
-  the unknown version. A failed `run` or `build` removes a state directory it
-  created.
+  `ip_range`, `build.secrets`, external secrets and external configs do not
+  change the hash.
+  A subnet is a hard error only when that network will be created and a
+  service assigns a static IPv4 address on it. IPv6-only subnets, `/31` pools
+  and every other pool problem are warnings, and the subnet is still passed
+  to `network create`. External networks are not checked. On wslc 3.0.1,
+  static addresses stay warnings, as in v0.1.5.
+  An unreadable `wslc --version` does not recreate containers. A service is
+  warned only when its stored hash matches neither the legacy nor the 3.0.3
+  digest of the current config. `--strict` rejects the unknown version from
+  the shared load path, so `up`, `run --no-deps` and `build` fail before any
+  wslc mutation. A failed `run` or `build` removes a state directory it
+  created. `run` checks networks before it creates networks or pulls images.
 
 ### Added
 
