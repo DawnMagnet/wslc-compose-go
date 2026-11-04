@@ -66,8 +66,11 @@ func (a *App) converge(ctx context.Context, o UpOptions) (started []string, err 
 	if err := applyScale(p, o.Scale); err != nil {
 		return nil, err
 	}
-	if err := translate.ValidateServiceNetworks(p); err != nil {
+	if err := a.checkNetworks(p); err != nil {
 		return nil, err
+	}
+	if a.versionUnknown() && a.o.Strict {
+		return nil, fmt.Errorf("wslc version unknown (--strict): %w", project.ErrStrict)
 	}
 	rb := &rollback{}
 	defer func() {
@@ -108,6 +111,14 @@ func (a *App) converge(ctx context.Context, o UpOptions) (started []string, err 
 		replicas, err := replicaNames(p, s)
 		if err != nil {
 			return nil, err
+		}
+		if a.versionUnknown() {
+			for _, act := range actual {
+				if act.Service == name && act.Hash != "" && act.Hash != hash {
+					a.infof("WARN service %s: wslc version unknown; changes were not applied", name)
+					break
+				}
+			}
 		}
 		ops := plan.Service(plan.Desired{Service: name, Hash: hash, Names: replicas}, actual,
 			plan.Options{ForceRecreate: o.ForceRecreate || rebuilt[name], NoRecreate: o.NoRecreate || a.versionUnknown()})

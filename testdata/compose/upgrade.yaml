@@ -1,0 +1,41 @@
+# Services whose container command does, and does not, change between wslc 3.0.1 and 3.0.3.
+name: upg
+services:
+  plain:
+    image: alpine
+  multi:
+    image: alpine
+    networks: [a, b]
+  addressed:
+    image: alpine
+    networks:
+      a:
+        ipv4_address: 10.1.0.10
+  extsec:
+    image: alpine
+    secrets: [outside]
+  ranged:
+    image: alpine
+    networks: [pool]
+  built:
+    image: alpine
+    build:
+      context: ./web
+      secrets: [tok]
+secrets:
+  outside:
+    external: true
+  tok:
+    file: ./api.env
+networks:
+  a:
+    ipam:
+      config:
+        - subnet: 10.1.0.0/24
+          gateway: 10.1.0.1
+  b: {}
+  pool:
+    ipam:
+      config:
+        - subnet: 10.2.0.0/24
+          ip_range: 10.2.0.128/25

@@ -342,9 +342,10 @@ See [`testdata/golden/`](testdata/golden); `up_full.golden` covers nearly every 
 - **Config hash.** JSON + SHA-256 of the service config, excluding `build`, `pull_policy`, `scale`/`replicas`,
   `depends_on` and `profiles`, so changing replica counts or dependencies does not recreate containers.
   A service whose wslc command is unchanged from v0.1.5 keeps that historical digest (`minimal.yaml` hello is
-  `0df62ea0…`), so upgrading does not recreate it. Schema version 2 and the `3.0.3` tier are mixed in only when
-  the service uses a feature whose command changed (secrets, configs, extra_hosts, or, on wslc 3.0.3.0, multiple
-  networks, static IPv4, `ip_range`, secondary endpoint options, `build.secrets`).
+  `0df62ea0…`), so upgrading does not recreate it. Schema version 2 is mixed in when the container command
+  changed on every wslc (mounted secrets, configs, extra_hosts). The `3.0.3` tier is added only when the
+  command itself depends on that version (multiple networks, static IPv4, secondary endpoint options).
+  `ip_range`, `build.secrets` and external secrets do not change the run command and do not change the hash.
   Services rebuilt by `up --build` are always recreated. Inspect with `wslc-compose config --hash "*"`.
 - **Default DNS 1.1.1.1.** The wslc utility VM forwards DNS to the Windows host resolver; on many LAN/corporate
   networks containers then get `SERVFAIL` for public names (apt/npm/pip fail). Services without `dns:` therefore
@@ -747,8 +748,8 @@ wslc.exe network remove minimal_default
   `file:` 来源按原路径挂载，不复制。
 - **配置哈希。** 对服务配置做 JSON + SHA-256，排除 `build`、`pull_policy`、`scale`/`replicas`、`depends_on`、
   `profiles`，避免只调整副本数或依赖时重建容器。命令与 v0.1.5 相同的服务保持原来的摘要（`minimal.yaml` 的 hello 为
-  `0df62ea0…`），升级不会重建。只有用到新翻译的服务（secrets、configs、extra_hosts，以及在 wslc 3.0.3.0 上的多网络、
-  静态 IPv4、`ip_range`、次要端点选项、`build.secrets`）才会把模式版本 2 和能力档混进哈希。
+  `0df62ea0…`），升级不会重建。挂载的 secret、config、extra_hosts 会混入模式版本 2；只有容器命令依赖 wslc 版本时
+  （多网络、静态 IPv4、次要端点选项）才混入 `3.0.3` 档。`ip_range`、`build.secrets` 和 external secret 不改变运行命令，也不改变哈希。
   `up --build` 重新构建过的服务会强制重建。
   `wslc-compose config --hash "*"` 可查看。
 - **默认 DNS 1.1.1.1。** wslc 的工具 VM 把 DNS 转发到 Windows 主机解析器；在很多局域网/企业网络里，

@@ -313,6 +313,161 @@ func TestUpRollbackRemovesNewState(t *testing.T) {
 	}
 }
 
+func TestOldWslcIPAMIsWarning(t *testing.T) {
+	cases := []struct {
+		name, body, warn string
+	}{
+		{"replicas", `
+name: replicas
+services:
+  web:
+    image: alpine
+    deploy:
+      replicas: 2
+    networks:
+      n:
+        ipv4_address: 10.0.0.10
+networks:
+  n:
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24
+          gateway: 10.0.0.1
+`, "static IPv4"},
+		{"outside", `
+name: outside
+services:
+  web:
+    image: alpine
+    networks:
+      n:
+        ipv4_address: 10.1.0.10
+networks:
+  n:
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24
+          gateway: 10.0.0.1
+`, "static IPv4"},
+		{"gateway", `
+name: gateway
+services:
+  web:
+    image: alpine
+    networks: [n]
+networks:
+  n:
+    ipam:
+      config:
+        - gateway: 10.0.0.1
+`, "requires a subnet"},
+		{"slash32", `
+name: slash32
+services:
+  web:
+    image: alpine
+    networks: [n]
+networks:
+  n:
+    ipam:
+      config:
+        - subnet: 10.0.0.0/32
+`, "broadcast"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "compose.yaml")
+			if err := os.WriteFile(path, []byte(strings.TrimSpace(tc.body)+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			h := newHarness(t, "minimal.yaml", func(o *Options) { o.Files = []string{path} })
+			h.fake.version = "wslc version 3.0.1.0"
+			h.fake.images["alpine"] = true
+			if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+				t.Fatalf("3.0.1 up: %v\n%s", err, h.stderr.String())
+			}
+			if !strings.Contains(h.stderr.String(), tc.warn) {
+				t.Fatalf("missing warning %q in\n%s", tc.warn, h.stderr.String())
+			}
+			if tc.name == "gateway" || tc.name == "slash32" {
+				strict := newHarness(t, "minimal.yaml", func(o *Options) {
+					o.Files = []string{path}
+					o.Strict = true
+				})
+				strict.fake.version = "wslc version 3.0.1.0"
+				strict.fake.images["alpine"] = true
+				if err := strict.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+					t.Fatalf("v0.1.5 accepted this under --strict: %v\n%s", err, strict.stderr.String())
+				}
+			}
+		})
+	}
+}
+
+func TestUnknownVersionSkipsImageChange(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yaml")
+	write := func(image string) {
+		t.Helper()
+		body := "name: minimal\nservices:\n  hello:\n    image: " + image + "\n    ports: [\"8080:80\"]\n"
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("nginx:alpine")
+	h := newHarness(t, "minimal.yaml", func(o *Options) { o.Files = []string{path} })
+	h.fake.images["nginx:alpine"] = true
+	h.fake.images["nginx:latest"] = true
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("up: %v\n%s", err, h.stderr.String())
+	}
+	write("nginx:latest")
+	h.fake.version = "not a version"
+	h.fake.calls = nil
+	h.reopen()
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("non-strict: %v\n%s", err, h.stderr.String())
+	}
+	if m := h.fake.mutations(); strings.Contains(m, "run ") || strings.Contains(m, "remove ") {
+		t.Fatalf("unknown version recreated hello:\n%s", m)
+	}
+	if !strings.Contains(h.stderr.String(), "service hello") || !strings.Contains(h.stderr.String(), "not applied") {
+		t.Fatalf("missing per-service warning:\n%s", h.stderr.String())
+	}
+	h.app.o.Strict = true
+	h.fake.calls = nil
+	h.reopen()
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); !errors.Is(err, project.ErrStrict) {
+		t.Fatalf("strict unknown version: %v", err)
+	}
+}
+
+func TestUpgradeRecreatesOnlyChangedCommands(t *testing.T) {
+	h := newHarness(t, "upgrade.yaml", nil)
+	h.fake.version = "wslc version 3.0.1.0"
+	h.fake.images["alpine"] = true
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("3.0.1: %v\n%s", err, h.stderr.String())
+	}
+	h.fake.version = "wslc version 3.0.3.0"
+	h.fake.calls = nil
+	h.reopen()
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("3.0.3: %v\n%s", err, h.stderr.String())
+	}
+	m := h.fake.mutations()
+	for _, name := range []string{"upg-multi-1", "upg-addressed-1"} {
+		if !strings.Contains(m, name) {
+			t.Errorf("upgrade should recreate %s:\n%s", name, m)
+		}
+	}
+	for _, name := range []string{"upg-plain-1", "upg-extsec-1", "upg-ranged-1", "upg-built-1"} {
+		if strings.Contains(m, name) {
+			t.Errorf("upgrade recreated %s whose run command did not change:\n%s", name, m)
+		}
+	}
+}
+
 func TestUnchangedHashSurvivesUpgrade(t *testing.T) {
 	const helloHash = "0df62ea0f7a4228c79ebe55b0d198f8ce5de02a73ed48a3d6d6d15a7257493bc"
 	for _, version := range []string{"wslc version 3.0.1.0", "wslc version 3.0.3.0"} {

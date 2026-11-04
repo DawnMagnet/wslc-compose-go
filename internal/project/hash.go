@@ -57,19 +57,18 @@ func stripHash(s types.ServiceConfig) types.ServiceConfig {
 	return s
 }
 
-// translationDelta reports whether s produces a different wslc command than
-// v0.1.5 on eng. tier is set only when that difference depends on the wslc
-// version (multi-network attach, static IPv4, ip_range, secondary endpoint
-// options, build --secret). Secrets, configs and extra_hosts change the
-// command on every version, so they bump the schema without a tier.
+// translationDelta reports whether s produces a different container command
+// than v0.1.5 on eng. tier is set only when that difference depends on the
+// wslc version (multi-network attach, static IPv4, secondary endpoint
+// options). ip_range and build.secrets do not change the run command, and
+// external secrets are not mounted, so none of those bump the digest.
+// File-backed secrets, configs and extra_hosts change the command on every
+// version, so they bump the schema without a tier.
 func translationDelta(p *types.Project, s types.ServiceConfig, eng Engine) (schema bool, tier string) {
-	if len(s.Secrets) > 0 || len(s.Configs) > 0 || len(s.ExtraHosts) > 0 {
+	if mountedSecret(p, s) || len(s.Configs) > 0 || len(s.ExtraHosts) > 0 {
 		schema = true
 	}
-	if s.Build != nil && len(s.Build.Secrets) > 0 && eng.BuildSecret {
-		schema, tier = true, "3.0.3"
-	}
-	if s.NetworkMode != "" || p == nil {
+	if s.NetworkMode != "" {
 		return schema, tier
 	}
 	keys := s.NetworksByPriority()
@@ -84,15 +83,22 @@ func translationDelta(p *types.Project, s types.ServiceConfig, eng Engine) (sche
 		if i > 0 && cfg != nil && eng.EndpointExtras && (len(cfg.LinkLocalIPs) > 0 || len(cfg.DriverOpts) > 0) {
 			schema, tier = true, "3.0.3"
 		}
-		if eng.IPRange {
-			if n, ok := p.Networks[key]; ok {
-				for _, pool := range n.Ipam.Config {
-					if pool != nil && pool.IPRange != "" {
-						schema, tier = true, "3.0.3"
-					}
-				}
-			}
-		}
 	}
 	return schema, tier
+}
+
+// mountedSecret reports whether s bind-mounts a secret. External secrets are
+// skipped, matching v0.1.5's run command.
+func mountedSecret(p *types.Project, s types.ServiceConfig) bool {
+	for _, raw := range s.Secrets {
+		ref := types.FileReferenceConfig(raw)
+		if p == nil {
+			return true
+		}
+		sec, ok := p.Secrets[ref.Source]
+		if !ok || !bool(sec.External) {
+			return true
+		}
+	}
+	return false
 }

@@ -48,8 +48,11 @@ func TestValidateServiceNetworks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateServiceNetworks(p); err == nil || !strings.Contains(err.Error(), "not a usable") {
+	if _, err := ValidateServiceNetworks(p, true); err == nil || !strings.Contains(err.Error(), "not a usable") {
 		t.Fatalf("network address: %v", err)
+	}
+	if _, err := ValidateServiceNetworks(p, false); err != nil {
+		t.Fatalf("old wslc must not reject a static address: %v", err)
 	}
 
 	a := types.ServiceConfig{Name: "a"}
@@ -60,14 +63,14 @@ func TestValidateServiceNetworks(t *testing.T) {
 		Services: types.Services{"a": a, "b": b},
 		Networks: types.Networks{"n": {Ipam: types.IPAMConfig{Config: []*types.IPAMPool{{Subnet: "10.0.0.0/24", Gateway: "10.0.0.1"}}}}},
 	}
-	if err := ValidateServiceNetworks(dup); err == nil || !strings.Contains(err.Error(), "also requested") {
+	if _, err := ValidateServiceNetworks(dup, true); err == nil || !strings.Contains(err.Error(), "also requested") {
 		t.Fatalf("duplicate: %v", err)
 	}
 	two := 2
 	b.Scale = &two
 	b.Networks = map[string]*types.ServiceNetworkConfig{"n": {Ipv4Address: "10.0.0.11"}}
 	dup.Services["b"] = b
-	if err := ValidateServiceNetworks(dup); err == nil || !strings.Contains(err.Error(), "replicas") {
+	if _, err := ValidateServiceNetworks(dup, true); err == nil || !strings.Contains(err.Error(), "replicas") {
 		t.Fatalf("scale: %v", err)
 	}
 	lone := types.ServiceConfig{Name: "a"}
@@ -75,8 +78,11 @@ func TestValidateServiceNetworks(t *testing.T) {
 		Services: types.Services{"a": lone},
 		Networks: types.Networks{"n": {Ipam: types.IPAMConfig{Config: []*types.IPAMPool{{Subnet: "10.0.0.0/24", IPRange: "10.1.0.0/24"}}}}},
 	}
-	if err := ValidateServiceNetworks(badRange); err == nil || !strings.Contains(err.Error(), "ip_range") {
+	if _, err := ValidateServiceNetworks(badRange, true); err == nil || !strings.Contains(err.Error(), "ip_range") {
 		t.Fatalf("ip_range: %v", err)
+	}
+	if warns, err := ValidateServiceNetworks(badRange, false); err != nil || len(warns) == 0 || !strings.Contains(warns[0], "ip_range") {
+		t.Fatalf("old wslc should warn, not fail: warns=%v err=%v", warns, err)
 	}
 	gwSvc := types.ServiceConfig{Name: "a"}
 	gwSvc.Networks = map[string]*types.ServiceNetworkConfig{"n": {Ipv4Address: "10.0.0.1"}}
@@ -84,7 +90,7 @@ func TestValidateServiceNetworks(t *testing.T) {
 		Services: types.Services{"a": gwSvc},
 		Networks: types.Networks{"n": {Ipam: types.IPAMConfig{Config: []*types.IPAMPool{{Subnet: "10.0.0.0/24", Gateway: "10.0.0.1"}}}}},
 	}
-	if err := ValidateServiceNetworks(gw); err == nil || !strings.Contains(err.Error(), "gateway") {
+	if _, err := ValidateServiceNetworks(gw, true); err == nil || !strings.Contains(err.Error(), "gateway") {
 		t.Fatalf("gateway address: %v", err)
 	}
 }

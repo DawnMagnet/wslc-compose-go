@@ -10,13 +10,16 @@
   directory is under `%LOCALAPPDATA%`, and file modes are not asserted as Unix
   bits. A failed `up` removes a state directory it created. `down` still
   removes networks and that directory when host-gateway cleanup fails.
-- Config hashes stay identical to v0.1.5 for services whose wslc command did
-  not change (for example `minimal.yaml` hello is `0df62ea0…`). Schema version
-  2 and the 3.0.3 tier are mixed in only when that service uses a newly
-  translated feature, and only the tier when the command actually depends on
-  the wslc version. An unreadable `wslc --version` does not recreate existing
-  containers; gated features on new containers are skipped (or rejected with
-  `--strict`). A failed `run` or `build` removes a state directory it created.
+- Config hashes stay identical to v0.1.5 for services whose container command
+  did not change (`minimal.yaml` hello is `0df62ea0…`). Schema version 2 is
+  added for mounted secrets, configs and extra_hosts. The 3.0.3 tier is added
+  only for multi-network, static IPv4 and secondary endpoint options.
+  `ip_range`, `build.secrets` and external secrets do not change the hash.
+  On wslc 3.0.1, static addresses and invalid IPAM are warnings, as in v0.1.5,
+  not errors. An unreadable `wslc --version` does not recreate containers; a
+  service whose config changed is named in a warning, and `--strict` rejects
+  the unknown version. A failed `run` or `build` removes a state directory it
+  created.
 
 ### Added
 

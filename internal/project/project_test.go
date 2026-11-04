@@ -225,6 +225,34 @@ func TestServiceHash(t *testing.T) {
 	if got, _ := ServiceHash(p, db, LatestEngine()); got != legacyHash(db) {
 		t.Fatalf("single-network db hash changed: %s", got)
 	}
+
+	ext := types.ServiceConfig{Name: "ext"}
+	ext.Secrets = []types.ServiceSecretConfig{types.ServiceSecretConfig(types.FileReferenceConfig{Source: "out"})}
+	ep := &types.Project{Services: types.Services{"ext": ext}, Secrets: types.Secrets{"out": {External: true}}}
+	if got, _ := ServiceHash(ep, ext, LatestEngine()); got != legacyHash(ext) {
+		t.Fatal("external secret must not change the hash")
+	}
+	ep.Secrets["out"] = types.SecretConfig{File: "secret.txt"}
+	if got, _ := ServiceHash(ep, ext, LatestEngine()); got == legacyHash(ext) {
+		t.Fatal("file secret must change the hash")
+	}
+	ranged := types.ServiceConfig{Name: "ranged"}
+	ranged.Networks = map[string]*types.ServiceNetworkConfig{"pool": {}}
+	rp := &types.Project{
+		Services: types.Services{"ranged": ranged},
+		Networks: types.Networks{"pool": {Ipam: types.IPAMConfig{Config: []*types.IPAMPool{{Subnet: "10.2.0.0/24", IPRange: "10.2.0.128/25"}}}}},
+	}
+	if got, _ := ServiceHash(rp, ranged, LatestEngine()); got != legacyHash(ranged) {
+		t.Fatal("ip_range must not change the container hash")
+	}
+	built := types.ServiceConfig{Name: "built"}
+	built.Build = &types.BuildConfig{Context: ".", Secrets: []types.ServiceSecretConfig{
+		types.ServiceSecretConfig(types.FileReferenceConfig{Source: "tok"}),
+	}}
+	bp := &types.Project{Services: types.Services{"built": built}, Secrets: types.Secrets{"tok": {File: "tok"}}}
+	if got, _ := ServiceHash(bp, built, LatestEngine()); got != legacyHash(built) {
+		t.Fatal("build.secrets must not change the container hash")
+	}
 }
 
 func legacyHash(s types.ServiceConfig) string {

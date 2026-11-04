@@ -162,6 +162,16 @@ func (a *App) hashEngine() project.Engine {
 	return a.eng
 }
 
+// checkNetworks applies static-address checks only when this wslc receives
+// --ip. On older builds, IPAM problems are warnings, which is what v0.1.5 did.
+func (a *App) checkNetworks(p *types.Project) error {
+	warns, err := translate.ValidateServiceNetworks(p, a.eng.StaticIPv4)
+	for _, w := range warns {
+		a.infof("WARN %s", w)
+	}
+	return err
+}
+
 // noteEngine warns once when a real run could not read wslc's version and
 // therefore left gated features off. Existing containers are not recreated.
 // `config` stays quiet: it never calls this.

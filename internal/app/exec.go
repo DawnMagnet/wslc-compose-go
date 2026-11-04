@@ -126,7 +126,7 @@ func (a *App) Run(ctx context.Context, o RunOptions) (err error) {
 	if o.Entrypoint != nil {
 		s.Entrypoint = o.Entrypoint
 	}
-	if err := translate.ValidateServiceNetworks(p); err != nil {
+	if err := a.checkNetworks(p); err != nil {
 		return err
 	}
 	hash, err := project.ServiceHash(p, s, a.hashEngine())

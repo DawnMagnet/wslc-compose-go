@@ -61,10 +61,29 @@ func endpointAliases(s types.ServiceConfig, key string) []string {
 	return slices.Compact(names)
 }
 
-// ValidateServiceNetworks rejects static addresses and IPAM settings that
-// cannot form a working IPv4 endpoint. wslc's error for these is opaque, so
-// they fail before any command is issued.
-func ValidateServiceNetworks(p *types.Project) error {
+// ValidateServiceNetworks checks static addresses and IPAM.
+// Address checks run only when staticIP is set, because older wslc builds
+// never receive --ip and v0.1.5 only warned. Pool problems are errors when
+// staticIP is set (the addresses are sent to wslc) and warnings otherwise.
+func ValidateServiceNetworks(p *types.Project, staticIP bool) (warnings []string, err error) {
+	if staticIP {
+		if err = validateAddresses(p); err != nil {
+			return nil, err
+		}
+	}
+	var pools []string
+	for _, key := range slices.Sorted(maps.Keys(p.Networks)) {
+		if msg := poolProblem(key, p.Networks[key]); msg != "" {
+			pools = append(pools, msg)
+		}
+	}
+	if staticIP && len(pools) > 0 {
+		return nil, fmt.Errorf("%s", pools[0])
+	}
+	return pools, nil
+}
+
+func validateAddresses(p *types.Project) error {
 	seen := map[string]string{}
 	for _, name := range p.ServiceNames() {
 		s := p.Services[name]
@@ -93,11 +112,6 @@ func ValidateServiceNetworks(p *types.Project) error {
 			}
 		}
 	}
-	for _, key := range slices.Sorted(maps.Keys(p.Networks)) {
-		if err := validatePool(key, p.Networks[key]); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
@@ -115,37 +129,37 @@ func addressInNetwork(service, key string, ip net.IP, n types.NetworkConfig) err
 	return nil
 }
 
-func validatePool(key string, n types.NetworkConfig) error {
+func poolProblem(key string, n types.NetworkConfig) string {
 	pool, prefix := firstPool(n)
 	if pool == nil {
-		return nil
+		return ""
 	}
 	if pool.Subnet == "" && (pool.Gateway != "" || pool.IPRange != "") {
-		return fmt.Errorf("network %q: ipam gateway/ip_range requires a subnet", key)
+		return fmt.Sprintf("network %q: ipam gateway/ip_range requires a subnet", key)
 	}
 	if pool.Subnet == "" {
-		return nil
+		return ""
 	}
 	if prefix == nil {
-		return fmt.Errorf("network %q: invalid IPv4 subnet %q", key, pool.Subnet)
+		return fmt.Sprintf("network %q: invalid IPv4 subnet %q", key, pool.Subnet)
 	}
 	ones, _ := prefix.Mask.Size()
 	if ones > 30 {
-		return fmt.Errorf("network %q: subnet %s needs network, gateway and broadcast addresses", key, prefix)
+		return fmt.Sprintf("network %q: subnet %s needs network, gateway and broadcast addresses", key, prefix)
 	}
 	if pool.Gateway != "" {
 		gw := net.ParseIP(pool.Gateway).To4()
 		if gw == nil || !usable4(prefix, gw) {
-			return fmt.Errorf("network %q: gateway %q is not a usable address in %s", key, pool.Gateway, prefix)
+			return fmt.Sprintf("network %q: gateway %q is not a usable address in %s", key, pool.Gateway, prefix)
 		}
 	}
 	if pool.IPRange != "" {
 		_, rng, err := net.ParseCIDR(pool.IPRange)
 		if err != nil || rng.IP.To4() == nil || !cidrInside(prefix, rng) {
-			return fmt.Errorf("network %q: ip_range %q is not an IPv4 range inside %s", key, pool.IPRange, prefix)
+			return fmt.Sprintf("network %q: ip_range %q is not an IPv4 range inside %s", key, pool.IPRange, prefix)
 		}
 	}
-	return nil
+	return ""
 }
 
 func firstPool(n types.NetworkConfig) (*types.IPAMPool, *net.IPNet) {
