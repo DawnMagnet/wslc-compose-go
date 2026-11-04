@@ -25,12 +25,13 @@ profiles, env_file and extends are all handled upstream), then translates every 
 - **`--strict`**: fields wslc cannot implement become errors instead of warnings.
 - **Single binary**: native Windows exe (UPX-packed, ~1.8 MB), or run inside a WSL distro and drive `wslc.exe`.
 
-> Status: preview (v0.1). Unit and golden tests cover every wslc interaction (mocked Runner). Verified on
+> Status: preview (v0.2). Unit and golden tests cover every wslc interaction (mocked Runner). Verified on
 > Windows 11 + **wslc 3.0.1**: `up`/`up -d`/`down -v`/`ps`/`logs`/`exec`/`run`/`build`/`pull`/`--scale`,
 > healthcheck waits, anonymous volumes and **GPU (RTX 5060 Ti, CUDA)**.
 > Multi-network attach, static IPv4, `ip_range`, secrets/configs, `build --secret`, `extra_hosts` and
 > host-gateway session rules are covered by the mocked Runner and golden files only — they need a
-> **wslc 3.0.3.0** (or newer) machine before they can be treated as verified. Please attach `--dry-run` output to issues.
+> **wslc 3.0.3.0** (or newer) machine before they can be treated as verified.
+> wslc 3.0.3.0-only features are covered by mocked tests only. Please attach `--dry-run` output to issues.
 
 ## Contents
 
@@ -461,11 +462,12 @@ wslc compose up -d        # PowerShell 语法糖，等价
 - **`--strict`**：遇到 wslc 无法实现的字段直接报错，而不是静默忽略。
 - **单一可执行文件**：Windows 原生 exe（UPX 压缩，约 1.8 MB），或在 WSL 发行版内运行并自动调用 `wslc.exe`。
 
-> 状态：预览（v0.1）。单元/golden 测试覆盖全部 wslc 交互（mock Runner）；并已在 Windows 11 +
+> 状态：预览（v0.2）。单元/golden 测试覆盖全部 wslc 交互（mock Runner）；并已在 Windows 11 +
 > **wslc 3.0.1** 真机上回归 `up`/`up -d`/`down -v`/`ps`/`logs`/`exec`/`run`/`build`/`pull`/`--scale`、
 > 健康检查等待、匿名卷与 **GPU（RTX 5060 Ti，CUDA）**。
 > 多网络接入、静态 IPv4、`ip_range`、secrets/configs、`build --secret`、`extra_hosts` 与 host-gateway
 > 会话规则目前只由 mock Runner 和 golden 文件覆盖，需要在 **wslc 3.0.3.0**（或更新）的真机上才能算验证过。
+> 仅 wslc 3.0.3.0 才有的功能目前只有 mock 测试覆盖。
 > 遇到差异欢迎附 `--dry-run` 输出提 issue。
 
 ---

@@ -40,7 +40,7 @@
   highest-priority endpoint (`--network`, `--ip`, `--network-alias`) and the others
   are attached with `wslc network connect` (`--ip`, `--network-alias`, `--link-local-ip`,
   `--driver-opt`) before `start`. A single network still uses `wslc run -d`.
-- Network IPAM `ip_range` (`network create --ip-range`), plus validation that static
+- Network IPAM `ip_range` (`network create --ip-range`) (wslc 3.0.3.0+), plus validation that static
   addresses and ranges sit inside the subnet. Replicas cannot share one static address.
 - Secrets and configs. `file:` sources are mounted read-only at `/run/secrets/<name>`
   or `/<name>` (or `target`). `environment:` and `content:` are written under the
