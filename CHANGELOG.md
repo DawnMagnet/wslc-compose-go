@@ -1,21 +1,35 @@
 # Changelog
 
-## Unreleased
+## v0.2.1 - 2026-11-04
 
 ### Fixed
 
 - `wslc system session run` on wslc 3.0.3.0 can exit 1 with `ERROR_INVALID_HANDLE`
-  after the script has already finished. Host-gateway scripts record their exit
-  status in the session VM (`/run/<owner>.status`). When wslc reports this error,
-  that recorded status is the result, and the full script runs again only when
-  the status for this attempt is missing. `up` keeps a project whose rules were
-  programmed. Each attempt records its own nonce, so an earlier success cannot
-  hide a later failure. On wslc 3.0.3, `down` removes host-gateway rules whenever
-  the compose file uses host-gateway, a container carries the label, or project
-  state records that rules were programmed (the marker is written before the
-  install script and kept if `up` rolls back). A project that does not use
-  host-gateway and has no such record makes no session call. If this wslc
-  cannot run session cleanup, `down` keeps the marker and warns.
+  after the script has already finished. The session script records
+  `<nonce>-<attempt> <exit>` in `/run/<owner>.status` from an `EXIT` trap
+  (temp file, then `mv -f`). On that error the client reads the file and uses
+  only this attempt's line. The full script runs again only when the line is
+  missing, so an earlier success cannot hide a later failure. The retry budget
+  is 5 attempts, 2s apart (about 8s of waiting). Reading the status file uses
+  that same budget when `cat` itself returns `ERROR_INVALID_HANDLE` with no
+  output, and then the call fails instead of assuming success. `TERM` / `INT` /
+  `HUP` are recorded as 143 / 130 / 129. `ERROR_SHARING_VIOLATION` and
+  `ERROR_ALREADY_EXISTS` are retried again. Session calls, including the status
+  read, pass an empty stdin. A recorded exit 0 is success, so `down` no longer
+  always exits 1 on wslc 3.0.3, and `up` with host-gateway plus published ports
+  no longer rolls the project back after the chains are installed.
+- Host-gateway cleanup uses a write-ahead marker (`host-gateway` in the project
+  state directory). It is written before the install script and kept if `up`
+  rolls back, so a failed `up` is cleaned on the next `down`. On wslc 3.0.3,
+  `down` runs that cleanup whenever the compose file uses host-gateway, a
+  container carries the label, or the marker is set, which also removes chains
+  left by v0.2.0 (v0.2.0 did not write a marker). A project that does not use
+  host-gateway and has no such record makes no session call. Behavior change:
+  failing to write the marker now fails `up` (the first revision of this fix
+  only warned, and it wrote the marker after the script). On wslc 3.0.1 or an
+  unknown version, a leftover marker makes `down` warn and keep the marker;
+  run `down` again after upgrading to wslc 3.0.3. On wslc 3.0.1, output for
+  compose files without secrets, configs or `extra_hosts` is unchanged.
 
 ## v0.2.0 - 2026-11-04
 
