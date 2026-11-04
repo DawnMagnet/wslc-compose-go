@@ -460,7 +460,7 @@ func TestDownKeepsMarkerWithoutSession(t *testing.T) {
 			if strings.Contains(h.fake.mutations(), "system session") {
 				t.Fatalf("this wslc cannot clean rules:\n%s", h.fake.mutations())
 			}
-			if !strings.Contains(h.stderr.String(), "keeping the marker") {
+			if !strings.Contains(h.stderr.String(), "keeping the marker") || !strings.Contains(h.stderr.String(), "Run down again after upgrading to wslc 3.0.3 to remove the leftover rules") {
 				t.Fatalf("stderr:\n%s", h.stderr.String())
 			}
 			marked, err := h.app.gatewayProgrammed("hosts")

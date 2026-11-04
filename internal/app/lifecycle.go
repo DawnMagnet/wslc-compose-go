@@ -61,7 +61,7 @@ func (a *App) Down(ctx context.Context, o DownOptions) error {
 	keepMarker := false
 	needCleanup := false
 	if programmed && !a.eng.HostGateway {
-		a.infof("WARN host-gateway: rules may still be installed, but this wslc cannot run session cleanup (needs %s); keeping the marker", wslc.VerHostGateway)
+		a.infof("WARN host-gateway: rules may still be installed, but this wslc cannot run session cleanup (needs %s); keeping the marker. Run down again after upgrading to wslc 3.0.3 to remove the leftover rules", wslc.VerHostGateway)
 		keepMarker = true
 	} else if a.eng.HostGateway && (projectUsesGateway(p) || programmed || sawHostGateway(all)) {
 		needCleanup = true
