@@ -20,8 +20,8 @@
   session stdout is captured. On a non-zero script exit, wslc's stderr is kept.
   Failures writing or renaming the status file are ignored and do not change
   the exit code. A recorded exit 0 is success. v0.2.0 `down` frequently failed
-  with exit 1 on wslc 3.0.3 (every cycle in our real test) because each `down`
-  makes several session calls that intermittently fail; those calls now use the
+  with exit 1 on wslc 3.0.3 (every cycle in our real test) because its host-gateway cleanup session call intermittently fails with
+  `ERROR_INVALID_HANDLE`; that call now uses the
   recorded status. `up` with host-gateway plus published ports no longer rolls
   the project back after the chains are installed.
 - Host-gateway cleanup uses a write-ahead marker (`host-gateway` in the project
