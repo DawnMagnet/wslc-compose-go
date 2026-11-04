@@ -287,6 +287,19 @@ func uniqueTargets(service string, s types.ServiceConfig, mounts []Mount) error 
 	return nil
 }
 
+func makeRemovable(root string) {
+	if runtime.GOOS != "windows" || root == "" {
+		return
+	}
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d == nil || d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		_ = os.Chmod(path, 0o700)
+		return nil
+	})
+}
+
 func sanitize(name string) string {
 	var b strings.Builder
 	for _, r := range name {
@@ -331,6 +344,38 @@ func GatewayMarked(dir string) (bool, error) {
 	return true, nil
 }
 
+// RemoveKeepingGateway deletes the project state directory, but leaves the
+// directory in place with the host-gateway marker when that marker exists.
+// up's rollback uses this so a failed install does not forget that session
+// rules may already be installed.
+func RemoveKeepingGateway(dir string) error {
+	marked, err := GatewayMarked(dir)
+	if err != nil {
+		return err
+	}
+	if !marked {
+		return Remove(dir)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if e.Name() == gatewayMarkerName {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		makeRemovable(path)
+		if err := os.RemoveAll(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 // Remove deletes the project state directory. A missing directory is not an error.
 // On Windows, read-only files are made removable first. Symlinks are left
 // alone so a link is not followed into another tree.
@@ -338,15 +383,7 @@ func Remove(dir string) error {
 	if dir == "" {
 		return nil
 	}
-	if runtime.GOOS == "windows" {
-		_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-			if err != nil || d == nil || d.Type()&os.ModeSymlink != 0 {
-				return nil
-			}
-			_ = os.Chmod(path, 0o700)
-			return nil
-		})
-	}
+	makeRemovable(dir)
 	err := os.RemoveAll(dir)
 	if os.IsNotExist(err) {
 		return nil

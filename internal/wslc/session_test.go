@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -84,10 +86,10 @@ func TestSessionInvalidHandleUsesRecordedStatus(t *testing.T) {
 			}
 			scripts++
 			recorded = sessionField(script, "_wcg_nonce") + " 72\n"
-			return &Error{Args: args, Code: 1, Stderr: "ERROR_INVALID_HANDLE"}
+			return &Error{Args: args, Code: 1, Stderr: "iptables: Bad rule\nERROR_INVALID_HANDLE"}
 		})
 		err := c.Session(context.Background(), "exit 72\n", statusPath)
-		if err == nil || !strings.Contains(err.Error(), "72") || ExitCode(err) != 72 {
+		if err == nil || !strings.Contains(err.Error(), "72") || !strings.Contains(err.Error(), "iptables: Bad rule") || ExitCode(err) != 72 {
 			t.Fatalf("status 72: %v", err)
 		}
 		if scripts != 1 {
@@ -207,7 +209,7 @@ func TestSessionHappyPathAndDryRun(t *testing.T) {
 	if called {
 		t.Fatal("dry-run executed the session")
 	}
-	if !strings.Contains(log.String(), dryRunNonce) || !strings.Contains(log.String(), "trap ") {
+	if !strings.Contains(log.String(), dryRunNonce+"-1") || !strings.Contains(log.String(), "trap 'exit 143' TERM") || !strings.Contains(log.String(), "mv -f") {
 		t.Fatalf("dry-run output: %s", log.String())
 	}
 	if err := dry.Session(context.Background(), "echo ok\n", "relative"); err == nil {
@@ -260,6 +262,138 @@ func TestSessionTrapRecordsExit(t *testing.T) {
 	}
 	if code, body := run("set -eu\nexit 72\n", "aa"); code != 72 || body != "aa 72\n" {
 		t.Fatalf("72: code %d body %q", code, body)
+	}
+}
+
+func TestSessionAttemptNonceDoesNotMaskLaterFailure(t *testing.T) {
+	var records []string
+	var nonces []string
+	scripts := 0
+	c := newSessionClient(t, 5, func(args []string, stdio IO) error {
+		requireSessionIO(t, stdio)
+		script := args[len(args)-1]
+		if strings.HasPrefix(script, "cat ") {
+			if len(records) > 0 {
+				io.WriteString(stdio.Stdout, strings.Join(records, "\n")+"\n")
+			}
+			return nil
+		}
+		scripts++
+		nonce := sessionField(script, "_wcg_nonce")
+		nonces = append(nonces, nonce)
+		if scripts == 1 {
+			return &Error{Args: args, Code: 1, Stderr: "ERROR_INVALID_HANDLE"}
+		}
+		// Attempt 1 finishes late and records success. Attempt 2 really failed.
+		records = append(records, nonces[0]+" 0", nonce+" 3")
+		return &Error{Args: args, Code: 1, Stderr: "iptables: Bad rule\nERROR_INVALID_HANDLE"}
+	})
+	err := c.Session(context.Background(), "echo ok\n", statusPath)
+	if err == nil || !strings.Contains(err.Error(), "3") || !strings.Contains(err.Error(), "iptables: Bad rule") {
+		t.Fatalf("later failure masked: %v", err)
+	}
+	if scripts != 2 {
+		t.Fatalf("scripts %d", scripts)
+	}
+	if len(nonces) != 2 || nonces[0] == nonces[1] || !strings.HasSuffix(nonces[0], "-1") || !strings.HasSuffix(nonces[1], "-2") {
+		t.Fatalf("nonces %v", nonces)
+	}
+}
+
+func TestSessionRetriesTransientErrors(t *testing.T) {
+	for _, marker := range []string{"ERROR_SHARING_VIOLATION", "ERROR_ALREADY_EXISTS"} {
+		t.Run(marker, func(t *testing.T) {
+			n := 0
+			c := newSessionClient(t, 5, func(args []string, stdio IO) error {
+				requireSessionIO(t, stdio)
+				if strings.HasPrefix(args[len(args)-1], "cat ") {
+					t.Fatal("transient errors must not read the status file")
+				}
+				n++
+				if n < 3 {
+					return &Error{Args: args, Code: 1, Stderr: marker}
+				}
+				return nil
+			})
+			if err := c.Session(context.Background(), "echo ok\n", statusPath); err != nil || n != 3 {
+				t.Fatalf("%s: err=%v n=%d", marker, err, n)
+			}
+		})
+	}
+	n := 0
+	c := newSessionClient(t, 4, func(args []string, _ IO) error {
+		n++
+		return &Error{Args: args, Code: 1, Stderr: "ERROR_SHARING_VIOLATION"}
+	})
+	err := c.Session(context.Background(), "echo ok\n", statusPath)
+	if err == nil || !strings.Contains(err.Error(), "ERROR_SHARING_VIOLATION") || n != 4 {
+		t.Fatalf("persistent sharing violation: %v after %d", err, n)
+	}
+}
+
+func TestSessionTrapSignals(t *testing.T) {
+	type shell struct {
+		name string
+		bin  string
+		args []string
+	}
+	shells := []shell{{name: "bash", bin: "bash"}, {name: "dash", bin: "dash"}}
+	if p, err := exec.LookPath("busybox"); err == nil {
+		shells = append(shells, shell{name: "busybox-ash", bin: p, args: []string{"ash"}})
+	}
+	signals := []struct {
+		name string
+		code int
+	}{{"TERM", 143}, {"INT", 130}, {"HUP", 129}}
+	ran := 0
+	for _, sh := range shells {
+		if _, err := exec.LookPath(sh.bin); err != nil {
+			continue
+		}
+		ran++
+		for _, sig := range signals {
+			t.Run(sh.name+"/"+sig.name, func(t *testing.T) {
+				dir := t.TempDir()
+				status := filepath.ToSlash(filepath.Join(dir, "s.status"))
+				script := wrapSessionScript("kill -"+sig.name+" $$\n", status, "abc1")
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				argv := append(append([]string{}, sh.args...), "-c", script)
+				cmd := exec.CommandContext(ctx, sh.bin, argv...)
+				err := cmd.Run()
+				code := 0
+				if err != nil {
+					var ee *exec.ExitError
+					if !errors.As(err, &ee) {
+						t.Fatal(err)
+					}
+					code = ee.ExitCode()
+				}
+				if code != sig.code {
+					t.Fatalf("exit %d, want %d", code, sig.code)
+				}
+				b, rerr := os.ReadFile(filepath.FromSlash(status))
+				if rerr != nil {
+					t.Fatal(rerr)
+				}
+				if string(b) != fmt.Sprintf("abc1 %d\n", sig.code) {
+					t.Fatalf("status %q", b)
+				}
+				left, _ := filepath.Glob(filepath.FromSlash(status) + ".*")
+				if len(left) != 0 {
+					t.Fatalf("temp status left behind: %v", left)
+				}
+			})
+		}
+	}
+	if ran == 0 {
+		if runtime.GOOS == "windows" {
+			t.Skip("no bash, dash, or busybox")
+		}
+		t.Fatal("need a shell to check signal traps")
+	}
+	if runtime.GOOS != "windows" && ran < 2 {
+		t.Fatal("need bash and dash to check signal traps")
 	}
 }
 

@@ -336,16 +336,24 @@ func TestDownNetworksSecretsHosts(t *testing.T) {
 	}
 	golden.Assert(t, "down_hosts.golden", down)
 
-	h = newHarness(t, "hosts.yaml", nil)
-	h.fake.networks = []string{"hosts_default"}
+	h = newHarness(t, "minimal.yaml", nil)
 	if err := h.app.Down(ctx, DownOptions{Timeout: 2}); err != nil {
 		t.Fatalf("empty down: %v", err)
 	}
 	if strings.Contains(h.fake.mutations(), "system session") {
-		t.Fatalf("empty down must not call session:\n%s", h.fake.mutations())
+		t.Fatalf("empty down of a project that does not use host-gateway must not call session:\n%s", h.fake.mutations())
+	}
+
+	h = newHarness(t, "hosts.yaml", nil)
+	h.fake.networks = []string{"hosts_default"}
+	if err := h.app.Down(ctx, DownOptions{Timeout: 2}); err != nil {
+		t.Fatalf("host-gateway down with no containers: %v", err)
+	}
+	if !strings.Contains(h.fake.mutations(), "system session run") {
+		t.Fatalf("compose host-gateway must still be cleaned when nothing is left:\n%s", h.fake.mutations())
 	}
 	if !strings.Contains(h.fake.mutations(), "network remove hosts_default") {
-		t.Fatalf("empty down must still remove networks:\n%s", h.fake.mutations())
+		t.Fatalf("down must still remove networks:\n%s", h.fake.mutations())
 	}
 
 	h = newHarness(t, "hosts.yaml", nil)
@@ -354,8 +362,8 @@ func TestDownNetworksSecretsHosts(t *testing.T) {
 	if err := h.app.Down(ctx, DownOptions{Timeout: 2}); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(h.fake.mutations(), "system session") {
-		t.Fatalf("unlabeled containers are not enough to clean rules:\n%s", h.fake.mutations())
+	if !strings.Contains(h.fake.mutations(), "system session run") {
+		t.Fatalf("unlabeled containers in a host-gateway project must still be cleaned:\n%s", h.fake.mutations())
 	}
 
 	h = newHarness(t, "hosts.yaml", nil)
@@ -386,6 +394,83 @@ func TestDownNetworksSecretsHosts(t *testing.T) {
 	}
 	if marked, merr := h.app.gatewayProgrammed("hosts"); merr != nil || !marked {
 		t.Fatalf("failed cleanup must keep the programmed marker: %v %v", marked, merr)
+	}
+}
+
+func hostsPublishedRuntime() map[string]map[string]any {
+	return map[string]map[string]any{
+		"hosts-web-1": {
+			"HostConfig": map[string]any{"NetworkMode": "hosts_default"},
+			"NetworkSettings": map[string]any{
+				"Networks": map[string]any{
+					"hosts_default": map[string]any{"IPAddress": "172.28.0.2", "Gateway": "172.28.0.1"},
+				},
+			},
+			"Ports": map[string]any{
+				"80/tcp": []any{map[string]any{"HostIp": "0.0.0.0", "HostPort": "8080"}},
+			},
+		},
+	}
+}
+
+func TestUpInstallFailureKeepsGatewayMarker(t *testing.T) {
+	h := newHarness(t, "hosts.yaml", nil)
+	h.fake.images["alpine"] = true
+	h.fake.runtime = hostsPublishedRuntime()
+	h.fake.sessionExit = 3
+	err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1})
+	if err == nil || !strings.Contains(err.Error(), "3") {
+		t.Fatalf("install exit 3: %v", err)
+	}
+	if len(h.fake.containers) != 0 {
+		t.Fatal("rollback should remove containers")
+	}
+	marked, merr := h.app.gatewayProgrammed("hosts")
+	if merr != nil || !marked {
+		t.Fatalf("marker must survive rollback: %v %v", marked, merr)
+	}
+	h.fake.sessionExit = 0
+	h.fake.calls = nil
+	if err := h.app.Down(ctx, DownOptions{Timeout: -1}); err != nil {
+		t.Fatalf("down after failed install: %v", err)
+	}
+	n := 0
+	for _, line := range strings.Split(h.fake.mutations(), "\n") {
+		if strings.Contains(line, "system session run") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("down should run cleanup once, got %d\n%s", n, h.fake.mutations())
+	}
+}
+
+func TestDownKeepsMarkerWithoutSession(t *testing.T) {
+	for _, version := range []string{"wslc version 3.0.1.0", "not-a-wslc-version"} {
+		t.Run(version, func(t *testing.T) {
+			h := newHarness(t, "hosts.yaml", nil)
+			h.fake.version = version
+			h.fake.networks = []string{"hosts_default"}
+			if err := h.app.noteGatewayProgrammed("hosts"); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.app.Down(ctx, DownOptions{Timeout: 2}); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(h.fake.mutations(), "system session") {
+				t.Fatalf("this wslc cannot clean rules:\n%s", h.fake.mutations())
+			}
+			if !strings.Contains(h.stderr.String(), "keeping the marker") {
+				t.Fatalf("stderr:\n%s", h.stderr.String())
+			}
+			marked, err := h.app.gatewayProgrammed("hosts")
+			if err != nil || !marked {
+				t.Fatalf("marker kept: %v %v", marked, err)
+			}
+			if !strings.Contains(h.fake.mutations(), "network remove hosts_default") {
+				t.Fatalf("networks must still be removed:\n%s", h.fake.mutations())
+			}
+		})
 	}
 }
 

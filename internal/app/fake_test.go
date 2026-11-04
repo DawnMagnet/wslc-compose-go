@@ -36,6 +36,7 @@ type fakeWSLC struct {
 	failSession  bool           // `system session run` fails
 	sessionFlaky bool           // script runs, wslc still returns ERROR_INVALID_HANDLE
 	sessionCode  int            // exit status recorded by the script when sessionFlaky
+	sessionExit  int            // >0: the gateway script exits with this code
 	lastSession  string
 	recorded     string
 	version      string                    // `wslc --version` text; empty means 3.0.3.0
@@ -117,6 +118,9 @@ func (f *fakeWSLC) Run(ctx context.Context, args []string, stdio wslc.IO) error 
 	}
 	if len(args) >= 2 && args[0] == "system" && args[1] == "session" {
 		script := args[len(args)-1]
+		if f.sessionExit > 0 && !strings.HasPrefix(script, "cat ") {
+			return &wslc.Error{Args: args, Code: f.sessionExit, Stderr: "iptables: chain in use"}
+		}
 		if f.sessionFlaky {
 			if strings.HasPrefix(script, "cat ") {
 				path := strings.TrimSpace(strings.TrimPrefix(script, "cat "))
@@ -238,7 +242,7 @@ func (f *fakeWSLC) remember(args []string) {
 
 var (
 	hashRE  = regexp.MustCompile(`config-hash=[0-9a-f]{64}`)
-	nonceRE = regexp.MustCompile(`_wcg_nonce='[0-9a-f]+'`)
+	nonceRE = regexp.MustCompile(`_wcg_nonce='[0-9a-f]+-[0-9]+'`)
 )
 
 // scrub makes command output stable: config hashes embed absolute paths, and

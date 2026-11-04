@@ -68,16 +68,15 @@ func (a *App) reconcileGateway(ctx context.Context, p *types.Project, cleanup bo
 	if err != nil {
 		return err
 	}
+	// Write-ahead: the install script can create chains and then fail.
+	// The marker has to exist before that, including when up rolls back.
+	if !cleanup && !a.c.DryRun() {
+		if err := a.noteGatewayProgrammed(p.Name); err != nil {
+			return err
+		}
+	}
 	if err := a.c.Session(ctx, script, translate.GatewayStatusPath(p.Name)); err != nil {
 		return fmt.Errorf("host-gateway: %w", err)
-	}
-	if cleanup || a.c.DryRun() {
-		return nil
-	}
-	// Remember that rules were programmed so a later down can remove them
-	// even after the labeled containers are already gone.
-	if err := a.noteGatewayProgrammed(p.Name); err != nil {
-		a.infof("WARN host-gateway: could not record programmed rules: %v", err)
 	}
 	return nil
 }
@@ -157,9 +156,9 @@ func (a *App) liveContainers(ctx context.Context, p *types.Project) ([]translate
 	return out, nil
 }
 
-// sawHostGateway reports whether a container that down is removing was
-// labeled as part of a host-gateway project. The compose file asking for
-// host-gateway is not enough: rules may never have been programmed.
+// sawHostGateway reports whether a container carries the host-gateway label.
+// down also cleans when the compose file itself uses host-gateway, because
+// the cleanup script is idempotent and rules may exist without the label.
 func sawHostGateway(cs []wslc.Container) bool {
 	for _, c := range cs {
 		if c.Labels[labels.HostGateway] == "v1" {

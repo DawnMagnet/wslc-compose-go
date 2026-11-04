@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -25,12 +26,13 @@ const dryRunNonce = "0000000000000000"
 //
 // wslc 3.0.3.0 intermittently exits 1 with ERROR_INVALID_HANDLE after the
 // script has already run. The script is wrapped so an EXIT trap writes
-// "<nonce> <exit>" to statusPath (for example /run/<owner>.status). On that
-// error the client reads the file with `cat` and uses the recorded status
-// for this nonce. The full script is run again only when that nonce is
-// absent. Both the gateway script and the read are idempotent: install and
-// cleanup take a flock and replace or delete chains in place, and `cat`
-// only reads.
+// "<nonce>-<attempt> <exit>" to statusPath (for example /run/<owner>.status).
+// On that error the client reads the file with `cat` and uses only the
+// record for this attempt. A previous attempt's success cannot mask a later
+// failure. The full script is run again only when this attempt's record is
+// absent. ERROR_SHARING_VIOLATION and ERROR_ALREADY_EXISTS are retried the
+// same way as other wslc mutations. Install and cleanup are idempotent
+// under flock, and `cat` only reads.
 //
 // Stdin is an explicit empty reader and stdout is a buffer, so the process
 // handles are pipes rather than the inherited or null device.
@@ -38,50 +40,72 @@ func (c *Client) Session(ctx context.Context, script, statusPath string) error {
 	if err := validateStatusPath(statusPath); err != nil {
 		return err
 	}
-	nonce := dryRunNonce
+	base := dryRunNonce
 	if !c.o.DryRun {
-		nonce = randomNonce()
+		base = randomNonce()
 	}
-	if !validNonce(nonce) {
-		return fmt.Errorf("wslc system session: invalid nonce %q", nonce)
+	if !validNonce(base) {
+		return fmt.Errorf("wslc system session: invalid nonce %q", base)
 	}
-	wrapped := wrapSessionScript(script, statusPath, nonce)
-	args := []string{"system", "session", "run", "sh", "-c", wrapped}
 	if c.o.DryRun {
+		args := []string{"system", "session", "run", "sh", "-c", wrapSessionScript(script, statusPath, attemptNonce(base, 1))}
 		fmt.Fprintln(c.o.Log, Format(c.o.Bin, args))
 		return nil
 	}
 	defer c.acquire()()
 	var last error
 	for attempt := 1; attempt <= c.o.Retries; attempt++ {
+		nonce := attemptNonce(base, attempt)
+		args := []string{"system", "session", "run", "sh", "-c", wrapSessionScript(script, statusPath, nonce)}
 		err := c.runSession(ctx, args)
 		if err == nil {
 			return nil
 		}
-		if !matches(err, []string{invalidHandle}) {
+		handle := matches(err, []string{invalidHandle})
+		if !handle && !matches(err, transient) {
 			return err
 		}
 		last = err
-		code, found, readErr := c.readSessionStatus(ctx, statusPath, nonce)
-		if readErr != nil {
-			return fmt.Errorf("wslc system session: ERROR_INVALID_HANDLE and %s could not be read after %d attempts: %w", statusPath, c.o.Retries, readErr)
-		}
-		if found {
-			fmt.Fprintf(c.o.Log, "wslc system session: ERROR_INVALID_HANDLE after the script ran; %s says exit %d\n", statusPath, code)
-			if code == 0 {
-				return nil
+		if handle {
+			code, found, readErr := c.readSessionStatus(ctx, statusPath, nonce)
+			if readErr != nil {
+				return fmt.Errorf("wslc system session: ERROR_INVALID_HANDLE and %s could not be read after %d attempts: %w", statusPath, c.o.Retries, readErr)
 			}
-			return &Error{Args: []string{"system", "session", "run"}, Code: code, Stderr: fmt.Sprintf("script exit %d", code)}
+			if found {
+				fmt.Fprintf(c.o.Log, "wslc system session: ERROR_INVALID_HANDLE after the script ran; %s says exit %d\n", statusPath, code)
+				if code == 0 {
+					return nil
+				}
+				return sessionStatusError(code, err)
+			}
 		}
 		if attempt == c.o.Retries {
-			break
+			if handle {
+				return fmt.Errorf("wslc system session: ERROR_INVALID_HANDLE and %s has no status for this attempt after %d attempts: %w", statusPath, c.o.Retries, err)
+			}
+			return err
 		}
-		fmt.Fprintf(c.o.Log, "wslc system session: ERROR_INVALID_HANDLE and %s has no status for this attempt, retrying (%d/%d)\n", statusPath, attempt, c.o.Retries-1)
+		why := invalidHandle
+		if !handle {
+			why = "transient error"
+		}
+		fmt.Fprintf(c.o.Log, "wslc system session: %s, retrying (%d/%d)\n", why, attempt, c.o.Retries-1)
 		if err := c.sleep(ctx); err != nil {
 			return err
 		}
 	}
-	return fmt.Errorf("wslc system session: ERROR_INVALID_HANDLE and %s has no status for this attempt after %d attempts: %w", statusPath, c.o.Retries, last)
+	return last
+}
+
+// sessionStatusError reports the script's own exit code and keeps the stderr
+// wslc already captured (the script's output, plus the handle error).
+func sessionStatusError(code int, cause error) error {
+	stderr := fmt.Sprintf("script exit %d", code)
+	var we *Error
+	if errors.As(cause, &we) && strings.TrimSpace(we.Stderr) != "" {
+		stderr = fmt.Sprintf("script exit %d\n%s", code, strings.TrimSpace(we.Stderr))
+	}
+	return &Error{Args: []string{"system", "session", "run"}, Code: code, Stderr: stderr, Err: cause}
 }
 
 // runSession executes one session command with an empty stdin and a captured stdout.
@@ -131,13 +155,18 @@ func (c *Client) sleep(ctx context.Context) error {
 	}
 }
 
-// wrapSessionScript prepends an EXIT trap. The trap records the script's
-// exit status, including failures from `set -e`, then re-exits with it so a
-// clean wslc still propagates the real code.
+// wrapSessionScript prepends signal traps and an EXIT trap. Bash records $?
+// as 0 when a signal ends the shell unless the signal trap exits with the
+// conventional code first; dash and busybox ash then see that code too.
+// The status line is written to a temp file and renamed into place so two
+// overlapping runs cannot leave a partial record.
 func wrapSessionScript(script, statusPath, nonce string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "_wcg_nonce='%s'\n_wcg_status='%s'\n", nonce, statusPath)
-	b.WriteString("trap '_wcg_rc=$?; printf \"%s %s\\n\" \"$_wcg_nonce\" \"$_wcg_rc\" > \"$_wcg_status\" 2>/dev/null || true; exit $_wcg_rc' EXIT\n")
+	b.WriteString("trap 'exit 143' TERM\n")
+	b.WriteString("trap 'exit 130' INT\n")
+	b.WriteString("trap 'exit 129' HUP\n")
+	b.WriteString("trap '_wcg_rc=$?; _wcg_tmp=\"${_wcg_status}.${_wcg_nonce}\"; printf \"%s %s\\n\" \"$_wcg_nonce\" \"$_wcg_rc\" > \"$_wcg_tmp\" && mv -f \"$_wcg_tmp\" \"$_wcg_status\"; exit $_wcg_rc' EXIT\n")
 	b.WriteString(script)
 	if !strings.HasSuffix(script, "\n") {
 		b.WriteByte('\n')
@@ -172,7 +201,18 @@ func validateStatusPath(p string) error {
 	return nil
 }
 
+func attemptNonce(base string, attempt int) string {
+	return fmt.Sprintf("%s-%d", base, attempt)
+}
+
 func validNonce(n string) bool {
+	if i := strings.IndexByte(n, '-'); i >= 0 {
+		rest := n[i+1:]
+		if rest == "" || strings.Trim(rest, "0123456789") != "" {
+			return false
+		}
+		n = n[:i]
+	}
 	if n == "" || len(n) > 64 {
 		return false
 	}
