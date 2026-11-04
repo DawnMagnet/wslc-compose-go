@@ -7,6 +7,7 @@ import (
 	"github.com/compose-spec/compose-go/v2/types"
 
 	"github.com/DawnMagnet/wslc-compose-go/internal/labels"
+	"github.com/DawnMagnet/wslc-compose-go/internal/state"
 	"github.com/DawnMagnet/wslc-compose-go/internal/translate"
 	"github.com/DawnMagnet/wslc-compose-go/internal/wslc"
 )
@@ -67,10 +68,34 @@ func (a *App) reconcileGateway(ctx context.Context, p *types.Project, cleanup bo
 	if err != nil {
 		return err
 	}
-	if err := a.c.Session(ctx, script); err != nil {
+	if err := a.c.Session(ctx, script, translate.GatewayStatusPath(p.Name)); err != nil {
 		return fmt.Errorf("host-gateway: %w", err)
 	}
+	if cleanup || a.c.DryRun() {
+		return nil
+	}
+	// Remember that rules were programmed so a later down can remove them
+	// even after the labeled containers are already gone.
+	if err := a.noteGatewayProgrammed(p.Name); err != nil {
+		a.infof("WARN host-gateway: could not record programmed rules: %v", err)
+	}
 	return nil
+}
+
+func (a *App) gatewayProgrammed(project string) (bool, error) {
+	dir, err := a.projectState(project)
+	if err != nil {
+		return false, err
+	}
+	return state.GatewayMarked(dir)
+}
+
+func (a *App) noteGatewayProgrammed(project string) error {
+	dir, err := a.projectState(project)
+	if err != nil {
+		return err
+	}
+	return state.MarkGateway(dir)
 }
 
 func projectUsesGateway(p *types.Project) bool {
@@ -132,9 +157,9 @@ func (a *App) liveContainers(ctx context.Context, p *types.Project) ([]translate
 	return out, nil
 }
 
-// sawHostGateway reports whether a removed container was labeled as part of
-// a host-gateway project, so down still deletes chains after the compose
-// file itself stopped requesting them.
+// sawHostGateway reports whether a container that down is removing was
+// labeled as part of a host-gateway project. The compose file asking for
+// host-gateway is not enough: rules may never have been programmed.
 func sawHostGateway(cs []wslc.Container) bool {
 	for _, c := range cs {
 		if c.Labels[labels.HostGateway] == "v1" {

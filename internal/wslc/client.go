@@ -367,12 +367,6 @@ func (c *Client) InspectRaw(ctx context.Context, name string) ([]byte, error) {
 	return c.query(ctx, "inspect", name)
 }
 
-// Session runs a script inside the wslc utility VM (`system session run`).
-// Host-gateway published-port rules need this, which arrived in wslc 3.0.3.0.
-func (c *Client) Session(ctx context.Context, script string) error {
-	return c.mutate(ctx, IO{}, "system", "session", "run", "sh", "-c", script)
-}
-
 // Version returns `wslc --version` output, or "" when unavailable.
 func (c *Client) Version(ctx context.Context) string {
 	var out bytes.Buffer

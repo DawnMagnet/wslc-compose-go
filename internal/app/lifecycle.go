@@ -48,7 +48,14 @@ func (a *App) Down(ctx context.Context, o DownOptions) error {
 		a.infof("WARN Found orphan containers %v; use --remove-orphans to remove them", orphans)
 	}
 	sortContainers(targets, svcOrder)
-	gateway := projectUsesGateway(p) || sawHostGateway(all)
+	programmed, err := a.gatewayProgrammed(p.Name)
+	if err != nil {
+		return err
+	}
+	// Nothing was programmed when up skipped session rules (no published
+	// endpoints) and no removed container carries the label. An empty down
+	// must not call `wslc system session`.
+	needCleanup := sawHostGateway(targets) || programmed
 	for _, c := range targets {
 		a.infof("Container %s  Removing", c.Name)
 		if c.Running() {
@@ -61,9 +68,11 @@ func (a *App) Down(ctx context.Context, o DownOptions) error {
 		}
 	}
 	var errs []error
-	if gateway {
+	var cleanupErr error
+	if needCleanup {
 		if err := a.reconcileGateway(ctx, p, true); err != nil {
 			a.infof("WARN host-gateway cleanup: %v", err)
+			cleanupErr = err
 			errs = append(errs, err)
 		}
 	}
@@ -72,6 +81,13 @@ func (a *App) Down(ctx context.Context, o DownOptions) error {
 	}
 	if err := a.removeState(p.Name); err != nil {
 		errs = append(errs, err)
+	}
+	// Containers are already gone. If cleanup failed, put the marker back so
+	// the next down still knows the chains may be installed.
+	if cleanupErr != nil {
+		if err := a.noteGatewayProgrammed(p.Name); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	return errors.Join(errs...)
 }

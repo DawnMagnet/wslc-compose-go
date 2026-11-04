@@ -78,6 +78,28 @@ func TestPrepareGeneratedAndExternal(t *testing.T) {
 	}
 }
 
+func TestGatewayMarker(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "p")
+	on, err := GatewayMarked(dir)
+	if err != nil || on {
+		t.Fatalf("missing dir: %v %v", on, err)
+	}
+	if err := MarkGateway(dir); err != nil {
+		t.Fatal(err)
+	}
+	on, err = GatewayMarked(dir)
+	if err != nil || !on {
+		t.Fatalf("marked: %v %v", on, err)
+	}
+	if err := Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	on, err = GatewayMarked(dir)
+	if err != nil || on {
+		t.Fatalf("removed marker: %v %v", on, err)
+	}
+}
+
 func TestPrepareMissingFile(t *testing.T) {
 	app := types.ServiceConfig{Name: "app"}
 	app.Secrets = []types.ServiceSecretConfig{types.ServiceSecretConfig(types.FileReferenceConfig{Source: "tok"})}

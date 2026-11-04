@@ -302,6 +302,35 @@ func sanitize(name string) string {
 	return b.String()
 }
 
+// gatewayMarkerName records that host-gateway iptables rules were programmed
+// and still need to be removed. It lives in the project state directory,
+// next to generated secrets, and is deleted with that directory.
+const gatewayMarkerName = "host-gateway"
+
+// MarkGateway records that this project's host-gateway rules were programmed.
+func MarkGateway(dir string) error {
+	if dir == "" {
+		return fmt.Errorf("state dir is empty")
+	}
+	return writeAtomic(filepath.Join(dir, gatewayMarkerName), []byte("v1\n"), 0o644)
+}
+
+// GatewayMarked reports whether MarkGateway has been called and the marker
+// has not been removed. A missing directory is not an error.
+func GatewayMarked(dir string) (bool, error) {
+	if dir == "" {
+		return false, nil
+	}
+	_, err := os.Lstat(filepath.Join(dir, gatewayMarkerName))
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // Remove deletes the project state directory. A missing directory is not an error.
 // On Windows, read-only files are made removable first. Symlinks are left
 // alone so a link is not followed into another tree.

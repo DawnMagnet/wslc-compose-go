@@ -197,7 +197,65 @@ func TestUpHostsGolden(t *testing.T) {
 	if err := dry.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
 		t.Fatal(err)
 	}
-	golden.Assert(t, "dryrun_hosts.golden", hashRE.ReplaceAllString(dry.stdout.String(), "config-hash=<hash>"))
+	golden.Assert(t, "dryrun_hosts.golden", scrub(dry.stdout.String()))
+}
+
+func TestUpSessionInvalidHandleTrustsStatus(t *testing.T) {
+	runtime := map[string]map[string]any{
+		"hosts-web-1": {
+			"HostConfig": map[string]any{"NetworkMode": "hosts_default"},
+			"NetworkSettings": map[string]any{
+				"Networks": map[string]any{
+					"hosts_default": map[string]any{"IPAddress": "172.28.0.2", "Gateway": "172.28.0.1"},
+				},
+			},
+			"Ports": map[string]any{
+				"80/tcp": []any{map[string]any{"HostIp": "0.0.0.0", "HostPort": "8080"}},
+			},
+		},
+	}
+	h := newHarness(t, "hosts.yaml", nil)
+	h.fake.track = true
+	h.fake.images["alpine"] = true
+	h.fake.runtime = runtime
+	h.fake.sessionFlaky = true
+	h.fake.sessionCode = 0
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("status 0 must succeed: %v\n%s", err, h.stderr.String())
+	}
+	if !strings.Contains(h.stderr.String(), "says exit 0") {
+		t.Fatalf("expected status recovery in the log:\n%s", h.stderr.String())
+	}
+	if len(h.fake.containers) == 0 {
+		t.Fatal("up removed the project after the script had exited 0")
+	}
+	marked, err := h.app.gatewayProgrammed("hosts")
+	if err != nil || !marked {
+		t.Fatalf("programmed rules must be recorded: %v %v", marked, err)
+	}
+	scriptCalls := 0
+	for _, c := range h.fake.calls {
+		if strings.Contains(c, "system session run") && !strings.Contains(c, "cat /run/") {
+			scriptCalls++
+		}
+	}
+	if scriptCalls != 1 {
+		t.Fatalf("status 0 must not re-run the script, calls=%d\n%v", scriptCalls, h.fake.calls)
+	}
+
+	bad := newHarness(t, "hosts.yaml", nil)
+	bad.fake.track = true
+	bad.fake.images["alpine"] = true
+	bad.fake.runtime = runtime
+	bad.fake.sessionFlaky = true
+	bad.fake.sessionCode = 72
+	err = bad.app.Up(ctx, UpOptions{Detach: true, Timeout: -1})
+	if err == nil || !strings.Contains(err.Error(), "72") {
+		t.Fatalf("status 72: %v", err)
+	}
+	if len(bad.fake.containers) != 0 {
+		t.Fatal("a real script failure must still roll the project back")
+	}
 }
 
 func TestLegacy301Goldens(t *testing.T) {
@@ -268,21 +326,66 @@ func TestDownNetworksSecretsHosts(t *testing.T) {
 
 	h = newHarness(t, "hosts.yaml", nil)
 	h.fake.networks = []string{"hosts_default"}
+	h.fake.containers = append(h.fake.containers, hostGatewayContainer("hosts", "web", 1, "h", true))
+	if err := h.app.Down(ctx, DownOptions{Timeout: 2}); err != nil {
+		t.Fatal(err)
+	}
+	down := h.fake.mutations()
+	if !strings.Contains(down, "system session run") {
+		t.Fatalf("down with a host-gateway container must run cleanup:\n%s", down)
+	}
+	golden.Assert(t, "down_hosts.golden", down)
+
+	h = newHarness(t, "hosts.yaml", nil)
+	h.fake.networks = []string{"hosts_default"}
+	if err := h.app.Down(ctx, DownOptions{Timeout: 2}); err != nil {
+		t.Fatalf("empty down: %v", err)
+	}
+	if strings.Contains(h.fake.mutations(), "system session") {
+		t.Fatalf("empty down must not call session:\n%s", h.fake.mutations())
+	}
+	if !strings.Contains(h.fake.mutations(), "network remove hosts_default") {
+		t.Fatalf("empty down must still remove networks:\n%s", h.fake.mutations())
+	}
+
+	h = newHarness(t, "hosts.yaml", nil)
+	h.fake.networks = []string{"hosts_default"}
 	h.fake.containers = append(h.fake.containers, container("hosts", "web", 1, "h", true))
 	if err := h.app.Down(ctx, DownOptions{Timeout: 2}); err != nil {
 		t.Fatal(err)
 	}
-	golden.Assert(t, "down_hosts.golden", h.fake.mutations())
+	if strings.Contains(h.fake.mutations(), "system session") {
+		t.Fatalf("unlabeled containers are not enough to clean rules:\n%s", h.fake.mutations())
+	}
+
+	h = newHarness(t, "hosts.yaml", nil)
+	if err := h.app.noteGatewayProgrammed("hosts"); err != nil {
+		t.Fatal(err)
+	}
+	h.fake.networks = []string{"hosts_default"}
+	if err := h.app.Down(ctx, DownOptions{Timeout: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(h.fake.mutations(), "system session run") {
+		t.Fatalf("programmed rules must be removed even with no containers:\n%s", h.fake.mutations())
+	}
+	if marked, err := h.app.gatewayProgrammed("hosts"); err != nil || marked {
+		t.Fatalf("successful cleanup must clear the marker: %v %v", marked, err)
+	}
 
 	h = newHarness(t, "hosts.yaml", nil)
 	h.fake.failSession = true
 	h.fake.networks = []string{"hosts_default"}
+	h.fake.containers = append(h.fake.containers, hostGatewayContainer("hosts", "web", 1, "h", true))
 	err := h.app.Down(ctx, DownOptions{Timeout: 2})
 	if err == nil || !strings.Contains(err.Error(), "iptables") {
 		t.Fatalf("gateway failure must surface: %v", err)
 	}
 	if !strings.Contains(h.fake.mutations(), "network remove hosts_default") {
 		t.Fatalf("down must still remove networks:\n%s", h.fake.mutations())
+	}
+	if marked, merr := h.app.gatewayProgrammed("hosts"); merr != nil || !marked {
+		t.Fatalf("failed cleanup must keep the programmed marker: %v %v", marked, merr)
 	}
 }
 

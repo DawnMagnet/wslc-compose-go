@@ -80,6 +80,11 @@ func TestGatewayScriptAndRoutes(t *testing.T) {
 	if !strings.Contains(cleanup, "-X ") {
 		t.Fatalf("cleanup must delete chains:\n%s", cleanup)
 	}
+	status := GatewayStatusPath("hosts")
+	owner := strings.TrimSuffix(strings.TrimPrefix(status, "/run/"), ".status")
+	if owner == "" || !strings.Contains(script, owner) || !strings.Contains(cleanup, owner) {
+		t.Fatalf("status path %s must use the script owner", status)
+	}
 	// Loopback publications are not widened.
 	services[0].Ports = []types.ServicePortConfig{{Target: 80, Published: "8080", HostIP: "127.0.0.1"}}
 	routes, err = CollectRoutes(services, live)

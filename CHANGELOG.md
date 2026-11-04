@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `wslc system session run` on wslc 3.0.3.0 can exit 1 with `ERROR_INVALID_HANDLE`
+  after the script has already finished. Host-gateway scripts record their exit
+  status in the session VM (`/run/<owner>.status`). When wslc reports this error,
+  that recorded status is the result, and the full script runs again only when
+  the status for this attempt is missing. `up` keeps a project whose rules were
+  programmed. `down` runs session cleanup only when a removed container carries
+  the host-gateway label or project state records that rules were programmed.
+  An empty `down` exits 0 without calling `wslc system session`.
+
 ## v0.2.0 - 2026-11-04
 
 ### Fixed

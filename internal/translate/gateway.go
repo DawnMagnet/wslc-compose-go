@@ -177,15 +177,32 @@ func atoi(s string) (int, bool) {
 	return n, err == nil
 }
 
+// GatewayStatusPath is the file inside the session VM that records the exit
+// status of this project's host-gateway script (/run/<owner>.status).
+func GatewayStatusPath(project string) string {
+	owner, _ := gatewayIdentity(project)
+	return "/run/" + owner + ".status"
+}
+
+func gatewayIdentity(project string) (owner, digest string) {
+	sum := sha256.Sum256([]byte(project))
+	digest = hex.EncodeToString(sum[:])
+	owner = "wslc-compose-host-gateway-" + digest
+	return owner, digest
+}
+
 // GatewayScript is the shell program run by `wslc system session run`.
 // cleanup removes the project's chains; otherwise it installs routes.
+// Both forms are safe to run again: they hold an exclusive lock, cleanup
+// deletes a chain only when it exists, and install replaces rules in place
+// (`iptables -C || iptables -I`, then a flush via iptables-restore). The
+// client wraps the program with an EXIT trap that records the exit status;
+// that wrapper does not change these iptables steps.
 func GatewayScript(project string, routes []Route, cleanup bool) (string, error) {
-	sum := sha256.Sum256([]byte(project))
-	digest := hex.EncodeToString(sum[:])
+	owner, digest := gatewayIdentity(project)
 	inChain := "WCGP_" + digest[:12]
 	outChain := "WCGS_" + digest[:12]
 	fwdChain := "WCGF_" + digest[:12]
-	owner := "wslc-compose-host-gateway-" + digest
 	var b strings.Builder
 	b.WriteString("set -eu\n")
 	b.WriteString("command -v iptables >/dev/null\n")
