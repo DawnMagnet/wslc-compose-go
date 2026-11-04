@@ -67,8 +67,9 @@ func endpointAliases(s types.ServiceConfig, key string) []string {
 // feature set, which is also when --ip-range is sent. A pool is a hard error
 // when this process will create that network and a service puts a static
 // IPv4 address on it, or when --ip-range would be sent for a range outside
-// the subnet. IPv6-only subnets and prefixes tighter than /30 stay warnings
-// and the subnet is still passed to wslc. External networks are not validated.
+// the subnet, or when the range has no usable IPv4 subnet at all. IPv6-only
+// subnets (no ip_range) and prefixes tighter than /30 stay warnings and the
+// subnet is still passed to wslc. External networks are not validated.
 func ValidateServiceNetworks(p *types.Project, staticIP bool) (warnings []string, err error) {
 	if staticIP {
 		if err = validateAddresses(p); err != nil {
@@ -98,8 +99,8 @@ func ValidateServiceNetworks(p *types.Project, staticIP bool) (warnings []string
 		if msg == "" {
 			continue
 		}
-		// --ip-range is new in 3.0.3. A range outside the subnet must fail
-		// before network create, even when no service assigns a static address.
+		// --ip-range is new in 3.0.3. A range that is not inside an IPv4
+		// subnet must fail before network create, even with no static address.
 		if staticOn[key] || (staticIP && rangeOutside(n)) {
 			return nil, fmt.Errorf("%s", msg)
 		}
@@ -177,12 +178,15 @@ func addressInNetwork(service, key string, ip net.IP, n types.NetworkConfig) err
 }
 
 // rangeOutside reports an ip_range that 3.0.3 would pass to --ip-range
-// and that does not sit inside the subnet. IPv6 and missing subnets are
-// left to the warning path; those still use --subnet, as v0.1.5 did.
+// and that is not an IPv4 range inside an IPv4 subnet. A missing subnet or
+// a non-IPv4 subnet has no usable IPv4 prefix, so the range is invalid.
 func rangeOutside(n types.NetworkConfig) bool {
 	pool, prefix := firstPool(n)
-	if pool == nil || pool.IPRange == "" || prefix == nil {
+	if pool == nil || pool.IPRange == "" {
 		return false
+	}
+	if prefix == nil {
+		return true
 	}
 	_, rng, err := net.ParseCIDR(pool.IPRange)
 	return err != nil || rng.IP.To4() == nil || !cidrInside(prefix, rng)
@@ -200,6 +204,9 @@ func poolProblem(key string, n types.NetworkConfig) string {
 		return ""
 	}
 	if prefix == nil {
+		if pool.IPRange != "" {
+			return fmt.Sprintf("network %q: ip_range %q requires an IPv4 subnet", key, pool.IPRange)
+		}
 		return fmt.Sprintf("network %q: invalid IPv4 subnet %q", key, pool.Subnet)
 	}
 	ones, _ := prefix.Mask.Size()

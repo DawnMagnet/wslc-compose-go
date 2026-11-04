@@ -91,6 +91,28 @@ func TestValidateServiceNetworks(t *testing.T) {
 	if _, err := ValidateServiceNetworks(badRange, true); err == nil || !strings.Contains(err.Error(), "ip_range") {
 		t.Fatalf("static address makes the pool a hard error: %v", err)
 	}
+	noSub := serviceOn("web", "n", "")
+	noSubP := &types.Project{
+		Services: types.Services{"web": noSub},
+		Networks: types.Networks{"n": {Ipam: types.IPAMConfig{Config: []*types.IPAMPool{{IPRange: "10.1.0.0/24"}}}}},
+	}
+	if _, err := ValidateServiceNetworks(noSubP, true); err == nil || !strings.Contains(err.Error(), "ip_range") {
+		t.Fatalf("ip_range without subnet: %v", err)
+	}
+	if warns, err := ValidateServiceNetworks(noSubP, false); err != nil || len(warns) == 0 || !strings.Contains(warns[0], "ip_range") {
+		t.Fatalf("old wslc ip_range without subnet: warns=%v err=%v", warns, err)
+	}
+	v6range := serviceOn("web", "n", "")
+	v6rp := &types.Project{
+		Services: types.Services{"web": v6range},
+		Networks: types.Networks{"n": {Ipam: types.IPAMConfig{Config: []*types.IPAMPool{{Subnet: "fd00:1::/64", IPRange: "fd00:1::/80"}}}}},
+	}
+	if _, err := ValidateServiceNetworks(v6rp, true); err == nil || !strings.Contains(err.Error(), "ip_range") {
+		t.Fatalf("ipv6 subnet with ip_range: %v", err)
+	}
+	if warns, err := ValidateServiceNetworks(v6rp, false); err != nil || len(warns) == 0 || !strings.Contains(warns[0], "ip_range") {
+		t.Fatalf("old wslc ipv6 ip_range: warns=%v err=%v", warns, err)
+	}
 	v6 := serviceOn("web", "n", "")
 	v6p := &types.Project{
 		Services: types.Services{"web": v6},

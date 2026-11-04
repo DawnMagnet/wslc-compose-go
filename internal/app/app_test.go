@@ -484,6 +484,124 @@ networks:
 	}
 }
 
+func TestIPRangeWithoutIPv4SubnetDoesNotMutate(t *testing.T) {
+	cases := []struct {
+		name, body string
+	}{
+		{"no-subnet", `
+name: nosub
+services:
+  web:
+    image: alpine:missing
+    networks: [n]
+networks:
+  n:
+    ipam:
+      config:
+        - ip_range: 10.1.0.0/24
+`},
+		{"ipv6", `
+name: v6range
+services:
+  web:
+    image: alpine:missing
+    networks: [n]
+networks:
+  n:
+    ipam:
+      config:
+        - subnet: fd00:1::/64
+          ip_range: fd00:1::/80
+`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "compose.yaml")
+			if err := os.WriteFile(path, []byte(strings.TrimSpace(tc.body)+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			h := newHarness(t, "minimal.yaml", func(o *Options) { o.Files = []string{path} })
+			err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1})
+			if err == nil || !strings.Contains(err.Error(), "ip_range") {
+				t.Fatalf("up: %v", err)
+			}
+			assertVersionOnly(t, h.fake)
+		})
+	}
+}
+
+func TestOldWslcOmitsIPRange(t *testing.T) {
+	cases := []struct {
+		name, body, subnet string
+	}{
+		{"no-subnet", `
+name: nosub
+services:
+  web:
+    image: alpine
+    networks: [n]
+networks:
+  n:
+    ipam:
+      config:
+        - ip_range: 10.1.0.0/24
+`, ""},
+		{"ipv6", `
+name: v6range
+services:
+  web:
+    image: alpine
+    networks: [n]
+networks:
+  n:
+    ipam:
+      config:
+        - subnet: fd00:1::/64
+          ip_range: fd00:1::/80
+`, "fd00:1::/64"},
+		{"outside", `
+name: range
+services:
+  web:
+    image: alpine
+    networks: [n]
+networks:
+  n:
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24
+          ip_range: 10.1.0.0/24
+`, "10.0.0.0/24"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "compose.yaml")
+			if err := os.WriteFile(path, []byte(strings.TrimSpace(tc.body)+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			h := newHarness(t, "minimal.yaml", func(o *Options) { o.Files = []string{path} })
+			h.fake.version = "wslc version 3.0.1.0"
+			h.fake.images["alpine"] = true
+			if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+				t.Fatalf("3.0.1 up: %v\n%s", err, h.stderr.String())
+			}
+			m := h.fake.mutations()
+			if strings.Contains(m, "--ip-range") {
+				t.Fatalf("3.0.1 emitted --ip-range:\n%s", m)
+			}
+			if !strings.Contains(m, "network create") {
+				t.Fatalf("3.0.1 did not create the network:\n%s", m)
+			}
+			if tc.subnet != "" && !strings.Contains(m, "--subnet "+tc.subnet) {
+				t.Fatalf("3.0.1 missing --subnet %s:\n%s", tc.subnet, m)
+			}
+			if !strings.Contains(h.stderr.String(), "ip_range") {
+				t.Fatalf("missing ip_range warning:\n%s", h.stderr.String())
+			}
+		})
+	}
+}
+
 func TestIPRangeOutsideSubnetDoesNotMutate(t *testing.T) {
 	body := `
 name: range

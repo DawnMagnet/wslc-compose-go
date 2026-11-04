@@ -17,12 +17,14 @@
   `ip_range`, `build.secrets`, external secrets and external configs do not
   change the hash.
   A subnet is a hard error only when that network will be created and a
-  service assigns a static IPv4 address on it. An `ip_range` outside the
-  subnet is also a hard error on wslc 3.0.3, before any command, because
-  `--ip-range` is not sent by older versions. IPv6-only subnets and `/31`
-  pools stay warnings, and the subnet is still passed to `network create`.
-  External networks are not checked. On wslc 3.0.1, static addresses and
-  `ip_range` stay warnings, as in v0.1.5.
+  service assigns a static IPv4 address on it. An `ip_range` that is outside
+  its subnet, or that has no usable IPv4 subnet (missing subnet, or an IPv6
+  subnet), is a hard error on wslc 3.0.3 before any command, because
+  `--ip-range` is not sent by older versions. An IPv6 subnet with no
+  `ip_range`, and `/31` pools, stay warnings, and the subnet is still passed
+  to `network create`. External networks are not checked. On wslc 3.0.1,
+  static addresses and `ip_range` stay warnings and `--ip-range` is not sent,
+  as in v0.1.5.
   An unreadable `wslc --version` does not recreate containers. A service is
   warned only when its stored hash matches neither the legacy nor the 3.0.3
   digest of the current config. `--strict` rejects the unknown version on
