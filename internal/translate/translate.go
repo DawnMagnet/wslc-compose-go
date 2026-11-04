@@ -31,6 +31,8 @@ type Translator struct {
 	Paths      paths.Mapper // host path mapper; nil means identity
 	DefaultDNS []string     // applied when a service sets no dns; nil disables
 	Meta       labels.Meta  // project-wide labels
+	// OmitStaticIP drops --ip. Set when the probed wslc predates VerEndpoints.
+	OmitStaticIP bool
 }
 
 // RunOptions customizes a single `wslc run` invocation.
@@ -315,20 +317,16 @@ func (t *Translator) network(s types.ServiceConfig, aliases bool) []string {
 	if key == "" {
 		return nil
 	}
-	name := key
-	if n, ok := t.Project.Networks[key]; ok && n.Name != "" {
-		name = n.Name
+	a := argv{"--network", t.networkName(key)}
+	if !t.OmitStaticIP {
+		if cfg := s.Networks[key]; cfg != nil && cfg.Ipv4Address != "" {
+			a.add("--ip", cfg.Ipv4Address)
+		}
 	}
-	a := argv{"--network", name}
 	if !aliases {
 		return a
 	}
-	names := []string{s.Name}
-	if cfg := s.Networks[key]; cfg != nil {
-		names = append(names, cfg.Aliases...)
-	}
-	slices.Sort(names)
-	a.each("--network-alias", slices.Compact(names))
+	a.each("--network-alias", endpointAliases(s, key))
 	return a
 }
 

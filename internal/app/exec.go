@@ -115,6 +115,9 @@ func (a *App) Run(ctx context.Context, o RunOptions) error {
 	if o.Entrypoint != nil {
 		s.Entrypoint = o.Entrypoint
 	}
+	if err := translate.ValidateServiceNetworks(p); err != nil {
+		return err
+	}
 	hash, err := project.ServiceHash(s)
 	if err != nil {
 		return err
@@ -127,11 +130,27 @@ func (a *App) Run(ctx context.Context, o RunOptions) error {
 	if len(o.Command) > 0 {
 		cmd = o.Command
 	}
-	args := a.translator(p).Run(s, translate.RunOptions{
+	tr := a.translator(p)
+	ro := translate.RunOptions{
 		Name: name, Hash: hash, Detach: o.Detach, Remove: o.Remove,
 		Command: cmd, NoTTY: o.NoTTY, TTY: !o.NoTTY && !o.Detach,
 		Publish: o.ServicePorts, ExtraEnv: o.Env,
-	})
+	}
+	if s.NetworkMode == "" && len(s.NetworksByPriority()) > 1 {
+		if a.eng.MultiNetwork && o.Detach {
+			if err := a.c.Run(ctx, tr.Create(s, ro)); err != nil {
+				return err
+			}
+			for _, key := range s.NetworksByPriority()[1:] {
+				if err := a.c.Run(ctx, tr.Connect(s, key, name)); err != nil {
+					return err
+				}
+			}
+			return a.c.Start(ctx, name)
+		}
+		a.infof("WARN %s: run attaches only network %s", s.Name, s.NetworksByPriority()[0])
+	}
+	args := tr.Run(s, ro)
 	if o.Detach {
 		return a.c.Run(ctx, args)
 	}

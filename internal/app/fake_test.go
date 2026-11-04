@@ -31,6 +31,7 @@ type fakeWSLC struct {
 	logs       map[string]string
 	exited     map[string]int // containers that report exited with this code
 	failRun    string         // `run` of this container name fails
+	version    string         // `wslc --version` text; empty means 3.0.3.0
 }
 
 func (f *fakeWSLC) Run(ctx context.Context, args []string, stdio wslc.IO) error {
@@ -91,8 +92,12 @@ func (f *fakeWSLC) Run(ctx context.Context, args []string, stdio wslc.IO) error 
 		return json.NewEncoder(out).Encode([]any{map[string]any{"Name": name, "State": state}})
 	case "logs":
 		fmt.Fprint(out, f.logs[args[len(args)-1]])
-	case "--version":
-		fmt.Fprintln(out, "wslc 2.9.4.0")
+	case "--version", "version":
+		v := f.version
+		if v == "" {
+			v = "wslc version 3.0.3.0"
+		}
+		fmt.Fprintln(out, v)
 	}
 	return nil
 }
@@ -106,7 +111,8 @@ func (f *fakeWSLC) mutations() string {
 	var b strings.Builder
 	for _, c := range f.calls {
 		if strings.HasPrefix(c, "wslc list") || strings.HasPrefix(c, "wslc inspect") ||
-			strings.Contains(c, " list") || strings.HasPrefix(c, "wslc image inspect") {
+			strings.Contains(c, " list") || strings.HasPrefix(c, "wslc image inspect") ||
+			strings.HasPrefix(c, "wslc --version") || strings.HasPrefix(c, "wslc version") {
 			continue
 		}
 		b.WriteString(c + "\n")

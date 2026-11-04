@@ -42,10 +42,13 @@ type Options struct {
 
 // App executes compose use cases against one wslc client.
 type App struct {
-	o     Options
-	c     *wslc.Client
-	paths paths.Mapper
-	io    wslc.IO
+	o      Options
+	c      *wslc.Client
+	paths  paths.Mapper
+	io     wslc.IO
+	eng    project.Engine
+	engSet bool
+	caps   wslc.Capabilities
 }
 
 // New builds an App on top of an explicit Runner and path Mapper; tests use
@@ -109,7 +112,34 @@ func (a *App) loadRaw(ctx context.Context, services []string, noDeps, quiet bool
 	if quiet {
 		w = io.Discard
 	}
-	return p, project.Enforce(project.Check(p), a.o.Strict, w)
+	eng := a.engine(ctx)
+	return p, project.Enforce(project.CheckEngine(p, eng), a.o.Strict, w)
+}
+
+// engine probes `wslc --version` once. A dry-run with no binary plans the
+// current feature set so the printed commands stay complete; a real run with
+// an unreadable version disables gated features instead of sending flags the
+// binary will reject.
+func (a *App) engine(ctx context.Context) project.Engine {
+	if a.engSet {
+		return a.eng
+	}
+	a.caps = wslc.ParseCapabilities(a.c.Version(ctx))
+	if !a.caps.Known {
+		if a.o.DryRun {
+			a.caps = wslc.AssumeCurrent()
+		} else {
+			a.infof("WARN wslc version unknown; multi-network attach, static IPv4 and IP ranges are disabled")
+		}
+	}
+	a.eng = project.Engine{
+		MultiNetwork:   a.caps.AtLeast(wslc.VerEndpoints),
+		StaticIPv4:     a.caps.AtLeast(wslc.VerEndpoints),
+		IPRange:        a.caps.AtLeast(wslc.VerEndpoints),
+		EndpointExtras: a.caps.AtLeast(wslc.VerEndpoints),
+	}
+	a.engSet = true
+	return a.eng
 }
 
 func (a *App) translator(p *types.Project) *translate.Translator {
@@ -118,9 +148,10 @@ func (a *App) translator(p *types.Project) *translate.Translator {
 		files[i] = a.paths(f)
 	}
 	return &translate.Translator{
-		Project:    p,
-		Paths:      a.paths,
-		DefaultDNS: a.o.DefaultDNS,
+		Project:      p,
+		Paths:        a.paths,
+		DefaultDNS:   a.o.DefaultDNS,
+		OmitStaticIP: a.engSet && !a.eng.StaticIPv4,
 		Meta: labels.Meta{
 			Project: p.Name, WorkingDir: a.paths(p.WorkingDir),
 			ConfigFiles: files, Version: Version,

@@ -241,6 +241,7 @@ type NetworkSpec struct {
 	Internal bool
 	Subnet   string
 	Gateway  string
+	IPRange  string // --ip-range; empty when the binary predates VerEndpoints
 	Options  map[string]string
 	Labels   map[string]string
 }
@@ -256,6 +257,9 @@ func (c *Client) CreateNetwork(ctx context.Context, name string, s NetworkSpec) 
 	}
 	if s.Gateway != "" {
 		args = append(args, "--gateway", s.Gateway)
+	}
+	if s.IPRange != "" {
+		args = append(args, "--ip-range", s.IPRange)
 	}
 	if s.Internal {
 		args = append(args, "--internal")

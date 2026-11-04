@@ -31,6 +31,54 @@ func TestUpFreshGolden(t *testing.T) {
 	}
 }
 
+func TestUpNetworksGolden(t *testing.T) {
+	h := newHarness(t, "networks.yaml", nil)
+	h.fake.networks = []string{"already"}
+	h.fake.images["alpine"] = true
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("up: %v\n%s", err, h.stderr.String())
+	}
+	golden.Assert(t, "up_networks.golden", h.fake.mutations())
+	h.stdout.Reset()
+	h.fake.calls = nil
+	h.app.o.DryRun = true
+	// Rebuild the client so dry-run prints; New is the supported way.
+	h.app = New(h.app.o, h.fake, golden.Paths, wslc.IO{Stdout: &h.stdout, Stderr: &h.stderr})
+	h.fake.calls = nil
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatal(err)
+	}
+	golden.Assert(t, "dryrun_networks.golden", hashRE.ReplaceAllString(h.stdout.String(), "config-hash=<hash>"))
+}
+
+func TestUpNetworksDegradeOnOldWslc(t *testing.T) {
+	h := newHarness(t, "networks.yaml", nil)
+	h.fake.version = "wslc version 3.0.1.0"
+	h.fake.networks = []string{"already"}
+	h.fake.images["alpine"] = true
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("up: %v\n%s", err, h.stderr.String())
+	}
+	m := h.fake.mutations()
+	if strings.Contains(m, "network connect") || strings.Contains(m, "--ip") || strings.Contains(m, "--ip-range") {
+		t.Fatalf("old wslc must not be sent gated flags:\n%s", m)
+	}
+	if !strings.Contains(m, "wslc run -d") || !strings.Contains(m, "--network nets_back") {
+		t.Fatalf("primary network should still be attached:\n%s", m)
+	}
+	if !strings.Contains(h.stderr.String(), "one network") || !strings.Contains(h.stderr.String(), "no --ip") {
+		t.Fatalf("missing degradation warnings:\n%s", h.stderr.String())
+	}
+	h.fake.calls = nil
+	h.app = New(Options{
+		Files: h.app.o.Files, IgnoreOSEnv: true, Bin: "wslc", Strict: true,
+		DefaultDNS: []string{"1.1.1.1"}, PollEvery: time.Millisecond,
+	}, h.fake, golden.Paths, wslc.IO{Stdout: &h.stdout, Stderr: &h.stderr})
+	if err := h.app.Up(ctx, UpOptions{Detach: true}); !errors.Is(err, project.ErrStrict) {
+		t.Fatalf("strict + old wslc: %v", err)
+	}
+}
+
 func TestUpIsIdempotent(t *testing.T) {
 	h := newHarness(t, "minimal.yaml", nil)
 	h.fake.networks = []string{"minimal_default"}
@@ -117,8 +165,8 @@ func TestStrictBlocksBeforeAnyCall(t *testing.T) {
 	if err := h.app.Up(ctx, UpOptions{Detach: true}); !errors.Is(err, project.ErrStrict) {
 		t.Fatalf("expected ErrStrict, got %v", err)
 	}
-	if len(h.fake.calls) != 0 {
-		t.Fatalf("strict mode must fail before calling wslc: %v", h.fake.calls)
+	if len(h.fake.calls) != 1 || !strings.Contains(h.fake.calls[0], "--version") {
+		t.Fatalf("strict mode must fail before mutating, got %v", h.fake.calls)
 	}
 }
 
@@ -250,7 +298,7 @@ func TestBuildPullConfigVersion(t *testing.T) {
 	}
 	h.stdout.Reset()
 	h.app.PrintVersion(ctx, false)
-	if !strings.Contains(h.stdout.String(), "wslc: wslc 2.9.4.0") {
+	if !strings.Contains(h.stdout.String(), "wslc: wslc version 3.0.3.0") {
 		t.Fatalf("version: %s", h.stdout.String())
 	}
 }

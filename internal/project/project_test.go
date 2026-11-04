@@ -124,6 +124,41 @@ func TestPolicy(t *testing.T) {
 	}
 }
 
+func TestNetworkPolicy(t *testing.T) {
+	p, err := Load(context.Background(), *load(t, "networks.yaml", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issues := Check(p); len(issues) != 0 {
+		t.Fatalf("current wslc should accept networks.yaml, got %v", issues)
+	}
+	old := CheckEngine(p, Engine{})
+	fields := map[string]bool{}
+	for _, i := range old {
+		fields[i.Field] = true
+	}
+	for _, f := range []string{"networks", "networks.back.ipv4_address", "networks.back.ipam.ip_range", "networks.front.link_local_ips"} {
+		if !fields[f] {
+			t.Errorf("old engine missing %s in %v", f, old)
+		}
+	}
+	v6 := p.Services["app"]
+	v6.Networks["back"].Ipv6Address = "fd00::10"
+	p.Services["app"] = v6
+	if issues := Check(p); !hasField(issues, "networks.back.ipv6_address") {
+		t.Fatalf("ipv6 must warn on a current engine: %v", issues)
+	}
+}
+
+func hasField(issues []Issue, field string) bool {
+	for _, i := range issues {
+		if i.Field == field {
+			return true
+		}
+	}
+	return false
+}
+
 func TestServiceHash(t *testing.T) {
 	p, err := Load(context.Background(), *load(t, "full.yaml", nil))
 	if err != nil {

@@ -66,6 +66,9 @@ func (a *App) converge(ctx context.Context, o UpOptions) (started []string, err 
 	if err := applyScale(p, o.Scale); err != nil {
 		return nil, err
 	}
+	if err := translate.ValidateServiceNetworks(p); err != nil {
+		return nil, err
+	}
 	rb := &rollback{}
 	defer func() {
 		if err != nil && !a.c.DryRun() {
@@ -168,9 +171,6 @@ func (r *rollback) run(ctx context.Context, a *App) {
 
 // apply executes one planned operation.
 func (a *App) apply(ctx context.Context, t *translate.Translator, s types.ServiceConfig, hash string, op plan.Op, timeout int) error {
-	run := func() error {
-		return a.c.Run(ctx, t.Run(s, translate.RunOptions{Number: op.Number, Hash: hash, Detach: true, Publish: true}))
-	}
 	remove := func() error {
 		if op.Running {
 			if err := a.c.Stop(ctx, op.Name, timeout); err != nil {
@@ -188,18 +188,43 @@ func (a *App) apply(ctx context.Context, t *translate.Translator, s types.Servic
 		return a.c.Start(ctx, op.Name)
 	case plan.Create:
 		a.infof("Container %s  Creating", op.Name)
-		return run()
+		return a.launch(ctx, t, s, hash, op)
 	case plan.Recreate:
 		a.infof("Container %s  Recreating", op.Name)
 		if err := remove(); err != nil {
 			return err
 		}
-		return run()
+		return a.launch(ctx, t, s, hash, op)
 	case plan.Remove:
 		a.infof("Container %s  Removing", op.Name)
 		return remove()
 	}
 	return fmt.Errorf("unknown action %v", op.Action)
+}
+
+// launch creates a container on its primary network, connects every other
+// endpoint, then starts it. A single network keeps `wslc run -d`. Secondary
+// endpoints are attached before start so the entrypoint sees them; that
+// ordering is what the wslc-compose reference uses and has not been
+// re-checked against a live wslc here.
+func (a *App) launch(ctx context.Context, t *translate.Translator, s types.ServiceConfig, hash string, op plan.Op) error {
+	o := translate.RunOptions{Number: op.Number, Hash: hash, Detach: true, Publish: true}
+	keys := []string(nil)
+	if s.NetworkMode == "" {
+		keys = s.NetworksByPriority()
+	}
+	if len(keys) < 2 || !a.eng.MultiNetwork {
+		return a.c.Run(ctx, t.Run(s, o))
+	}
+	if err := a.c.Run(ctx, t.Create(s, o)); err != nil {
+		return err
+	}
+	for _, key := range keys[1:] {
+		if err := a.c.Run(ctx, t.Connect(s, key, op.Name)); err != nil {
+			return err
+		}
+	}
+	return a.c.Start(ctx, op.Name)
 }
 
 func (a *App) handleOrphans(ctx context.Context, p *types.Project, actual []plan.Actual, remove bool, timeout int) error {
@@ -234,8 +259,10 @@ func orphanNames(as []plan.Actual) []string {
 func (a *App) ensureResources(ctx context.Context, p *types.Project, rb *rollback) error {
 	nets, vols := map[string]bool{}, map[string]bool{}
 	for _, s := range p.Services {
-		if key := translate.Network(s); key != "" {
-			nets[key] = true
+		if s.NetworkMode == "" {
+			for _, key := range s.NetworksByPriority() {
+				nets[key] = true
+			}
 		}
 		for _, v := range s.Volumes {
 			if v.Type == types.VolumeTypeVolume && v.Source != "" {
@@ -265,6 +292,9 @@ func (a *App) ensureResources(ctx context.Context, p *types.Project, rb *rollbac
 				}
 				if len(n.Ipam.Config) > 0 && n.Ipam.Config[0] != nil {
 					spec.Subnet, spec.Gateway = n.Ipam.Config[0].Subnet, n.Ipam.Config[0].Gateway
+					if a.eng.IPRange {
+						spec.IPRange = n.Ipam.Config[0].IPRange
+					}
 				}
 				if err := a.c.CreateNetwork(ctx, name, spec); err != nil {
 					return err

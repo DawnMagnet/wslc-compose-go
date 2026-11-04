@@ -111,9 +111,26 @@ var serviceRules = []rule{
 	{"healthcheck.start_interval", "no wslc flag; ignored", func(s *types.ServiceConfig) bool { return s.HealthCheck != nil && s.HealthCheck.StartInterval != nil }},
 }
 
-// Check inspects the (already selected) project and reports every field that
-// wslc-compose will drop or approximate.
-func Check(p *types.Project) []Issue {
+// Engine describes the wslc binary that will run the plan. Zero means the
+// probed build predates every gated feature (or the version could not be read).
+type Engine struct {
+	MultiNetwork   bool // create + network connect + start
+	StaticIPv4     bool // --ip on run/create and network connect
+	IPRange        bool // network create --ip-range
+	EndpointExtras bool // --link-local-ip and --driver-opt on network connect
+}
+
+// LatestEngine is a current wslc (3.0.3.0 feature floors).
+func LatestEngine() Engine {
+	return Engine{MultiNetwork: true, StaticIPv4: true, IPRange: true, EndpointExtras: true}
+}
+
+// Check reports fields the latest known wslc still cannot honor.
+func Check(p *types.Project) []Issue { return CheckEngine(p, LatestEngine()) }
+
+// CheckEngine inspects the (already selected) project and reports every field
+// that this wslc build will drop or approximate.
+func CheckEngine(p *types.Project, eng Engine) []Issue {
 	var out []Issue
 	for _, name := range p.ServiceNames() {
 		s := p.Services[name]
@@ -122,7 +139,7 @@ func Check(p *types.Project) []Issue {
 				out = append(out, Issue{Warn, name, r.field, r.detail})
 			}
 		}
-		out = append(out, checkDynamic(name, &s)...)
+		out = append(out, checkDynamic(name, &s, eng)...)
 	}
 	for _, name := range sortedKeys(p.Networks) {
 		n := p.Networks[name]
@@ -130,7 +147,33 @@ func Check(p *types.Project) []Issue {
 			out = append(out, Issue{Warn, "", "networks." + name + ".driver", fmt.Sprintf("driver %q is passed through; wslc may reject it", n.Driver)})
 		}
 		if n.EnableIPv6 != nil && *n.EnableIPv6 {
-			out = append(out, Issue{Warn, "", "networks." + name + ".enable_ipv6", ignored})
+			out = append(out, Issue{Warn, "", "networks." + name + ".enable_ipv6", "wslc networks are IPv4-only; ignored"})
+		}
+		if n.EnableIPv4 != nil && !*n.EnableIPv4 {
+			out = append(out, Issue{Warn, "", "networks." + name + ".enable_ipv4", ignored})
+		}
+		if n.Attachable {
+			out = append(out, Issue{Warn, "", "networks." + name + ".attachable", ignored})
+		}
+		if n.Ipam.Driver != "" && n.Ipam.Driver != "default" {
+			out = append(out, Issue{Warn, "", "networks." + name + ".ipam.driver", "custom IPAM drivers are ignored"})
+		}
+		if len(n.Ipam.Options) > 0 {
+			out = append(out, Issue{Warn, "", "networks." + name + ".ipam.options", ignored})
+		}
+		if len(n.Ipam.Config) > 1 {
+			out = append(out, Issue{Warn, "", "networks." + name + ".ipam.config", "wslc accepts one subnet per network; only the first config entry is applied"})
+		}
+		for _, pool := range n.Ipam.Config {
+			if pool == nil {
+				continue
+			}
+			if pool.IPRange != "" && !eng.IPRange {
+				out = append(out, Issue{Warn, "", "networks." + name + ".ipam.ip_range", "this wslc build has no --ip-range; ignored"})
+			}
+			if len(pool.AuxiliaryAddresses) > 0 {
+				out = append(out, Issue{Warn, "", "networks." + name + ".ipam.aux_addresses", ignored})
+			}
 		}
 	}
 	for _, name := range sortedKeys(p.Volumes) {
@@ -144,7 +187,7 @@ func Check(p *types.Project) []Issue {
 	return out
 }
 
-func checkDynamic(name string, s *types.ServiceConfig) []Issue {
+func checkDynamic(name string, s *types.ServiceConfig, eng Engine) []Issue {
 	var out []Issue
 	add := func(l Level, field, detail string) { out = append(out, Issue{l, name, field, detail}) }
 	switch mode := s.NetworkMode; {
@@ -154,12 +197,40 @@ func checkDynamic(name string, s *types.ServiceConfig) []Issue {
 	default:
 		add(Warn, "network_mode", fmt.Sprintf("%q is not supported; ignored", mode))
 	}
-	if len(s.Networks) > 1 {
-		add(Warn, "networks", fmt.Sprintf("wslc attaches one network per container; using %q", s.NetworksByPriority()[0]))
+	keys := s.NetworksByPriority()
+	if len(keys) > 1 && !eng.MultiNetwork {
+		add(Warn, "networks", fmt.Sprintf("this wslc build attaches one network per container; using %q", keys[0]))
 	}
-	for net, cfg := range s.Networks {
-		if cfg != nil && (cfg.Ipv4Address != "" || cfg.Ipv6Address != "" || cfg.MacAddress != "") {
-			add(Warn, "networks."+net+".ipv4_address", "static addresses are ignored")
+	primary := ""
+	if len(keys) > 0 && s.NetworkMode == "" {
+		primary = keys[0]
+	}
+	for _, net := range keys {
+		cfg := s.Networks[net]
+		if cfg == nil {
+			continue
+		}
+		if cfg.Ipv4Address != "" && !eng.StaticIPv4 {
+			add(Warn, "networks."+net+".ipv4_address", "this wslc build has no --ip; static IPv4 is ignored")
+		}
+		if cfg.Ipv6Address != "" {
+			add(Warn, "networks."+net+".ipv6_address", "wslc networks are IPv4-only; ipv6_address is ignored")
+		}
+		if cfg.MacAddress != "" {
+			add(Warn, "networks."+net+".mac_address", ignored)
+		}
+		if cfg.GatewayPriority != 0 {
+			add(Warn, "networks."+net+".gw_priority", ignored)
+		}
+		if cfg.InterfaceName != "" {
+			add(Warn, "networks."+net+".interface_name", ignored)
+		}
+		extras := len(cfg.LinkLocalIPs) > 0 || len(cfg.DriverOpts) > 0
+		switch {
+		case extras && !eng.EndpointExtras:
+			add(Warn, "networks."+net+".link_local_ips", "endpoint link-local IPs and driver_opts need a newer wslc; ignored")
+		case extras && net == primary:
+			add(Warn, "networks."+net+".driver_opts", "primary endpoint link-local IPs and driver_opts have no wslc run flag; ignored (they are applied when the network is added with network connect)")
 		}
 	}
 	for _, v := range s.Volumes {
