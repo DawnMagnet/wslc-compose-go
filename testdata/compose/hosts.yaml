@@ -1,0 +1,12 @@
+# extra_hosts, including the host-gateway token.
+name: hosts
+services:
+  db:
+    image: alpine
+  web:
+    image: alpine
+    ports: ["8080:80"]
+    extra_hosts:
+      - "db.internal:10.1.2.3"
+      - "host.docker.internal:host-gateway"
+    depends_on: [db]

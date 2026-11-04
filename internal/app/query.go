@@ -222,7 +222,7 @@ func (a *App) Config(ctx context.Context, o ConfigOptions) error {
 			if err != nil {
 				return err
 			}
-			h, err := project.ServiceHash(s)
+			h, err := project.ServiceHash(p, s, a.hashEngine())
 			if err != nil {
 				return err
 			}

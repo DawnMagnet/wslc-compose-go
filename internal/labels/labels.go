@@ -23,6 +23,9 @@ const (
 	Volume      = "com.docker.compose.volume"
 	ConfigHash  = "com.wslc.compose.config-hash"
 	Version     = "com.wslc.compose.version"
+	// HostGateway marks a container whose project programs session iptables
+	// so published ports are reachable via the host-gateway address.
+	HostGateway = "com.wslc.compose.host-gateway"
 )
 
 // Meta carries the project-wide values stamped on every container.

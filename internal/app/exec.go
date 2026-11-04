@@ -83,15 +83,28 @@ type RunOptions struct {
 
 // Run starts a one-off container for a service, bringing up its
 // dependencies first unless NoDeps is set.
-func (a *App) Run(ctx context.Context, o RunOptions) error {
+func (a *App) Run(ctx context.Context, o RunOptions) (err error) {
+	rb := &rollback{}
+	defer func() {
+		if err != nil && !a.c.DryRun() {
+			rb.run(context.WithoutCancel(ctx), a)
+		}
+	}()
 	p, err := a.load(ctx, []string{o.Service}, o.NoDeps, false)
 	if err != nil {
+		return err
+	}
+	if err := a.requireKnownVersion(); err != nil {
 		return err
 	}
 	s, err := p.GetService(o.Service)
 	if err != nil {
 		return err
 	}
+	if err := a.checkNetworks(p); err != nil {
+		return err
+	}
+	a.noteEngine()
 	if deps := s.GetDependencies(); len(deps) > 0 && !o.NoDeps {
 		if err := a.Up(ctx, UpOptions{Services: deps, Detach: true, Build: o.Build, Timeout: -1}); err != nil {
 			return err
@@ -103,7 +116,11 @@ func (a *App) Run(ctx context.Context, o RunOptions) error {
 	if err != nil {
 		return err
 	}
-	if _, err := a.prepareImages(ctx, only, imageOptions{build: o.Build}); err != nil {
+	tr, err := a.prepareTranslator(p, rb)
+	if err != nil {
+		return err
+	}
+	if _, err := a.prepareImages(ctx, only, tr, imageOptions{build: o.Build}); err != nil {
 		return err
 	}
 	if o.User != "" {
@@ -115,7 +132,7 @@ func (a *App) Run(ctx context.Context, o RunOptions) error {
 	if o.Entrypoint != nil {
 		s.Entrypoint = o.Entrypoint
 	}
-	hash, err := project.ServiceHash(s)
+	hash, err := project.ServiceHash(p, s, a.hashEngine())
 	if err != nil {
 		return err
 	}
@@ -127,11 +144,26 @@ func (a *App) Run(ctx context.Context, o RunOptions) error {
 	if len(o.Command) > 0 {
 		cmd = o.Command
 	}
-	args := a.translator(p).Run(s, translate.RunOptions{
+	ro := translate.RunOptions{
 		Name: name, Hash: hash, Detach: o.Detach, Remove: o.Remove,
 		Command: cmd, NoTTY: o.NoTTY, TTY: !o.NoTTY && !o.Detach,
 		Publish: o.ServicePorts, ExtraEnv: o.Env,
-	})
+	}
+	if s.NetworkMode == "" && len(s.NetworksByPriority()) > 1 {
+		if a.eng.MultiNetwork && o.Detach {
+			if err := a.c.Run(ctx, tr.Create(s, ro)); err != nil {
+				return err
+			}
+			for _, key := range s.NetworksByPriority()[1:] {
+				if err := a.c.Run(ctx, tr.Connect(s, key, name)); err != nil {
+					return err
+				}
+			}
+			return a.c.Start(ctx, name)
+		}
+		a.infof("WARN %s: run attaches only network %s", s.Name, s.NetworksByPriority()[0])
+	}
+	args := tr.Run(s, ro)
 	if o.Detach {
 		return a.c.Run(ctx, args)
 	}

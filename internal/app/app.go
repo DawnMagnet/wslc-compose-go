@@ -9,7 +9,10 @@ import (
 	"io"
 	"maps"
 	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/types"
@@ -18,6 +21,7 @@ import (
 	"github.com/DawnMagnet/wslc-compose-go/internal/paths"
 	"github.com/DawnMagnet/wslc-compose-go/internal/plan"
 	"github.com/DawnMagnet/wslc-compose-go/internal/project"
+	"github.com/DawnMagnet/wslc-compose-go/internal/state"
 	"github.com/DawnMagnet/wslc-compose-go/internal/translate"
 	"github.com/DawnMagnet/wslc-compose-go/internal/wslc"
 )
@@ -38,14 +42,19 @@ type Options struct {
 	PollEvery   time.Duration // dependency wait poll interval (default 1s)
 	Env         []string      // extra environment for interpolation (tests)
 	IgnoreOSEnv bool          // hermetic loading (tests)
+	StateDir    string        // root for generated secrets/configs; empty uses the user config dir
 }
 
 // App executes compose use cases against one wslc client.
 type App struct {
-	o     Options
-	c     *wslc.Client
-	paths paths.Mapper
-	io    wslc.IO
+	o      Options
+	c      *wslc.Client
+	paths  paths.Mapper
+	io     wslc.IO
+	eng    project.Engine
+	engSet bool
+	noted  bool
+	caps   wslc.Capabilities
 }
 
 // New builds an App on top of an explicit Runner and path Mapper; tests use
@@ -95,6 +104,18 @@ func (a *App) load(ctx context.Context, services []string, noDeps, quiet bool) (
 	return p, nil
 }
 
+// requireKnownVersion rejects --strict when `wslc --version` could not be
+// read. Only commands that create or change containers, images, or networks
+// (up, run, build, and the create path those use) call this, and they call
+// it after the version probe and before any mutation. down, start, stop,
+// restart, ps, logs, and exec keep working.
+func (a *App) requireKnownVersion() error {
+	if a.versionUnknown() && a.o.Strict {
+		return fmt.Errorf("wslc version unknown (--strict): %w", project.ErrStrict)
+	}
+	return nil
+}
+
 // loadRaw is load without wslc-specific rewrites (used by `config`).
 func (a *App) loadRaw(ctx context.Context, services []string, noDeps, quiet bool) (*types.Project, error) {
 	p, err := project.Load(ctx, project.Options{
@@ -109,7 +130,132 @@ func (a *App) loadRaw(ctx context.Context, services []string, noDeps, quiet bool
 	if quiet {
 		w = io.Discard
 	}
-	return p, project.Enforce(project.Check(p), a.o.Strict, w)
+	eng := a.engine(ctx)
+	return p, project.Enforce(project.CheckEngine(p, eng), a.o.Strict, w)
+}
+
+// engine probes `wslc --version` once. A dry-run with no binary plans the
+// current feature set so the printed commands stay complete; a real run with
+// an unreadable version disables gated features instead of sending flags the
+// binary will reject.
+func (a *App) engine(ctx context.Context) project.Engine {
+	if a.engSet {
+		return a.eng
+	}
+	a.caps = wslc.ParseCapabilities(a.c.Version(ctx))
+	if !a.caps.Known && a.o.DryRun {
+		a.caps = wslc.AssumeCurrent()
+	}
+	a.eng = project.Engine{
+		MultiNetwork:   a.caps.AtLeast(wslc.VerEndpoints),
+		StaticIPv4:     a.caps.AtLeast(wslc.VerEndpoints),
+		IPRange:        a.caps.AtLeast(wslc.VerEndpoints),
+		EndpointExtras: a.caps.AtLeast(wslc.VerEndpoints),
+		BuildSecret:    a.caps.AtLeast(wslc.VerBuildSecret),
+		HostGateway:    a.caps.AtLeast(wslc.VerHostGateway),
+	}
+	a.engSet = true
+	return a.eng
+}
+
+// versionUnknown is a real run whose `wslc --version` could not be read.
+// Dry-run assumes a current binary instead.
+func (a *App) versionUnknown() bool {
+	return a.engSet && !a.caps.Known && !a.caps.Assumed
+}
+
+// hashEngine is the capability set mixed into config hashes. An unknown
+// version does not fall back to the legacy tier: callers skip recreation
+// instead, so an existing container keeps the hash it was created with.
+func (a *App) hashEngine() project.Engine {
+	if a.versionUnknown() {
+		return project.Engine{}
+	}
+	return a.eng
+}
+
+// checkNetworks applies static-address checks only when this wslc receives
+// --ip. On older builds, IPAM problems are warnings, which is what v0.1.5 did.
+func (a *App) checkNetworks(p *types.Project) error {
+	warns, err := translate.ValidateServiceNetworks(p, a.eng.StaticIPv4)
+	for _, w := range warns {
+		a.infof("WARN %s", w)
+	}
+	return err
+}
+
+// noteEngine warns once when a real run could not read wslc's version and
+// therefore left gated features off. Existing containers are not recreated.
+// `config` stays quiet: it never calls this.
+func (a *App) noteEngine() {
+	if a.noted || a.caps.Known || a.caps.Assumed {
+		return
+	}
+	a.noted = true
+	a.infof("WARN wslc version unknown; multi-network attach, static IPv4, IP ranges, build --secret and host-gateway port loopback are disabled. Existing containers will not be recreated")
+}
+
+// projectState is the directory that holds generated secret and config files
+// for one project. It is removed by down.
+func (a *App) projectState(project string) (string, error) {
+	root := a.o.StateDir
+	if root == "" {
+		var err error
+		root, err = defaultStateRoot()
+		if err != nil {
+			root = os.TempDir()
+		}
+		root = filepath.Join(root, "wslc-compose")
+	}
+	project = strings.Map(func(r rune) rune {
+		if r == os.PathSeparator || r == '/' || r == '\\' {
+			return '_'
+		}
+		return r
+	}, project)
+	if project == "" || project == "." || project == ".." {
+		return "", fmt.Errorf("invalid project name %q", project)
+	}
+	return filepath.Join(root, project), nil
+}
+
+// defaultStateRoot is %LOCALAPPDATA% on Windows (not Roaming AppData) and
+// the user config directory everywhere else.
+func defaultStateRoot() (string, error) {
+	if runtime.GOOS == "windows" {
+		return os.UserCacheDir()
+	}
+	return os.UserConfigDir()
+}
+
+// prepareTranslator resolves secret and config files, then returns the
+// translator that mounts them. Dry-run computes the mount paths and does
+// not write secret bytes. rb, when non-nil, records a new state directory
+// so a failed up deletes it.
+func (a *App) prepareTranslator(p *types.Project, rb *rollback) (*translate.Translator, error) {
+	t := a.translator(p)
+	dir, err := a.projectState(p.Name)
+	if err != nil {
+		return nil, err
+	}
+	write := !a.c.DryRun()
+	prep, created, err := state.Prepare(dir, p, write)
+	if created && rb != nil {
+		rb.add("State", dir, func(context.Context, string) error { return state.Remove(dir) })
+	}
+	if err != nil {
+		return nil, err
+	}
+	t.SecretFiles = prep.SecretFiles
+	if len(prep.Mounts) > 0 {
+		t.Mounts = map[string][]translate.FileMount{}
+		for svc, ms := range prep.Mounts {
+			for _, m := range ms {
+				t.Mounts[svc] = append(t.Mounts[svc], translate.FileMount{Source: m.Source, Target: m.Target})
+			}
+		}
+	}
+	return t, nil
 }
 
 func (a *App) translator(p *types.Project) *translate.Translator {
@@ -118,9 +264,11 @@ func (a *App) translator(p *types.Project) *translate.Translator {
 		files[i] = a.paths(f)
 	}
 	return &translate.Translator{
-		Project:    p,
-		Paths:      a.paths,
-		DefaultDNS: a.o.DefaultDNS,
+		Project:           p,
+		Paths:             a.paths,
+		DefaultDNS:        a.o.DefaultDNS,
+		OmitStaticIP:      a.engSet && !a.eng.StaticIPv4,
+		AllowBuildSecrets: !a.engSet || a.eng.BuildSecret,
 		Meta: labels.Meta{
 			Project: p.Name, WorkingDir: a.paths(p.WorkingDir),
 			ConfigFiles: files, Version: Version,

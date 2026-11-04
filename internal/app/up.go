@@ -63,7 +63,13 @@ func (a *App) converge(ctx context.Context, o UpOptions) (started []string, err 
 	if err != nil {
 		return nil, err
 	}
+	if err := a.requireKnownVersion(); err != nil {
+		return nil, err
+	}
 	if err := applyScale(p, o.Scale); err != nil {
+		return nil, err
+	}
+	if err := a.checkNetworks(p); err != nil {
 		return nil, err
 	}
 	rb := &rollback{}
@@ -72,10 +78,15 @@ func (a *App) converge(ctx context.Context, o UpOptions) (started []string, err 
 			rb.run(context.WithoutCancel(ctx), a)
 		}
 	}()
+	a.noteEngine()
 	if err := a.ensureResources(ctx, p, rb); err != nil {
 		return nil, err
 	}
-	rebuilt, err := a.prepareImages(ctx, p, imageOptions{build: o.Build, noBuild: o.NoBuild, pull: o.Pull})
+	t, err := a.prepareTranslator(p, rb)
+	if err != nil {
+		return nil, err
+	}
+	rebuilt, err := a.prepareImages(ctx, p, t, imageOptions{build: o.Build, noBuild: o.NoBuild, pull: o.Pull})
 	if err != nil {
 		return nil, err
 	}
@@ -88,13 +99,12 @@ func (a *App) converge(ctx context.Context, o UpOptions) (started []string, err 
 	if err != nil {
 		return nil, err
 	}
-	t := a.translator(p)
 	for _, name := range names {
 		s := p.Services[name]
 		if err := a.waitDeps(ctx, p, s, o.WaitTimeout); err != nil {
 			return nil, err
 		}
-		hash, err := project.ServiceHash(s)
+		hash, err := project.ServiceHash(p, s, a.hashEngine())
 		if err != nil {
 			return nil, err
 		}
@@ -102,8 +112,27 @@ func (a *App) converge(ctx context.Context, o UpOptions) (started []string, err 
 		if err != nil {
 			return nil, err
 		}
+		if a.versionUnknown() {
+			legacy, err := project.ServiceHash(p, s, project.Engine{})
+			if err != nil {
+				return nil, err
+			}
+			current, err := project.ServiceHash(p, s, project.LatestEngine())
+			if err != nil {
+				return nil, err
+			}
+			for _, act := range actual {
+				// A container created on 3.0.1 or 3.0.3 for this same config
+				// still matches one of the two digests. Only a real config
+				// change (neither digest) is worth a warning.
+				if act.Service == name && act.Hash != "" && act.Hash != legacy && act.Hash != current {
+					a.infof("WARN service %s: wslc version unknown; changes were not applied", name)
+					break
+				}
+			}
+		}
 		ops := plan.Service(plan.Desired{Service: name, Hash: hash, Names: replicas}, actual,
-			plan.Options{ForceRecreate: o.ForceRecreate || rebuilt[name], NoRecreate: o.NoRecreate})
+			plan.Options{ForceRecreate: o.ForceRecreate || rebuilt[name], NoRecreate: o.NoRecreate || a.versionUnknown()})
 		for _, op := range ops {
 			if op.Action == plan.Create || op.Action == plan.Recreate {
 				// Registered first: a failed `run` may still leave a container behind.
@@ -117,7 +146,13 @@ func (a *App) converge(ctx context.Context, o UpOptions) (started []string, err 
 			}
 		}
 	}
-	return started, a.handleOrphans(ctx, p, actual, o.RemoveOrphans, o.Timeout)
+	if err := a.handleOrphans(ctx, p, actual, o.RemoveOrphans, o.Timeout); err != nil {
+		return nil, err
+	}
+	if err := a.reconcileGateway(ctx, p, false); err != nil {
+		return nil, err
+	}
+	return started, nil
 }
 
 // applyScale overrides replica counts from `up --scale SERVICE=N`.
@@ -168,9 +203,6 @@ func (r *rollback) run(ctx context.Context, a *App) {
 
 // apply executes one planned operation.
 func (a *App) apply(ctx context.Context, t *translate.Translator, s types.ServiceConfig, hash string, op plan.Op, timeout int) error {
-	run := func() error {
-		return a.c.Run(ctx, t.Run(s, translate.RunOptions{Number: op.Number, Hash: hash, Detach: true, Publish: true}))
-	}
 	remove := func() error {
 		if op.Running {
 			if err := a.c.Stop(ctx, op.Name, timeout); err != nil {
@@ -185,21 +217,55 @@ func (a *App) apply(ctx context.Context, t *translate.Translator, s types.Servic
 		return nil
 	case plan.Start:
 		a.infof("Container %s  Starting", op.Name)
-		return a.c.Start(ctx, op.Name)
+		if err := a.c.Start(ctx, op.Name); err != nil {
+			return err
+		}
+		return a.applyExtraHosts(ctx, s, op.Name)
 	case plan.Create:
 		a.infof("Container %s  Creating", op.Name)
-		return run()
+		if err := a.launch(ctx, t, s, hash, op); err != nil {
+			return err
+		}
+		return a.applyExtraHosts(ctx, s, op.Name)
 	case plan.Recreate:
 		a.infof("Container %s  Recreating", op.Name)
 		if err := remove(); err != nil {
 			return err
 		}
-		return run()
+		if err := a.launch(ctx, t, s, hash, op); err != nil {
+			return err
+		}
+		return a.applyExtraHosts(ctx, s, op.Name)
 	case plan.Remove:
 		a.infof("Container %s  Removing", op.Name)
 		return remove()
 	}
 	return fmt.Errorf("unknown action %v", op.Action)
+}
+
+// launch creates a container on its primary network, connects every other
+// endpoint, then starts it. A single network keeps `wslc run -d`. Secondary
+// endpoints are attached before start so the entrypoint sees them; that
+// ordering is what the wslc-compose reference uses and has not been
+// re-checked against a live wslc here.
+func (a *App) launch(ctx context.Context, t *translate.Translator, s types.ServiceConfig, hash string, op plan.Op) error {
+	o := translate.RunOptions{Number: op.Number, Hash: hash, Detach: true, Publish: true}
+	keys := []string(nil)
+	if s.NetworkMode == "" {
+		keys = s.NetworksByPriority()
+	}
+	if len(keys) < 2 || !a.eng.MultiNetwork {
+		return a.c.Run(ctx, t.Run(s, o))
+	}
+	if err := a.c.Run(ctx, t.Create(s, o)); err != nil {
+		return err
+	}
+	for _, key := range keys[1:] {
+		if err := a.c.Run(ctx, t.Connect(s, key, op.Name)); err != nil {
+			return err
+		}
+	}
+	return a.c.Start(ctx, op.Name)
 }
 
 func (a *App) handleOrphans(ctx context.Context, p *types.Project, actual []plan.Actual, remove bool, timeout int) error {
@@ -234,8 +300,10 @@ func orphanNames(as []plan.Actual) []string {
 func (a *App) ensureResources(ctx context.Context, p *types.Project, rb *rollback) error {
 	nets, vols := map[string]bool{}, map[string]bool{}
 	for _, s := range p.Services {
-		if key := translate.Network(s); key != "" {
-			nets[key] = true
+		if s.NetworkMode == "" {
+			for _, key := range s.NetworksByPriority() {
+				nets[key] = true
+			}
 		}
 		for _, v := range s.Volumes {
 			if v.Type == types.VolumeTypeVolume && v.Source != "" {
@@ -265,6 +333,9 @@ func (a *App) ensureResources(ctx context.Context, p *types.Project, rb *rollbac
 				}
 				if len(n.Ipam.Config) > 0 && n.Ipam.Config[0] != nil {
 					spec.Subnet, spec.Gateway = n.Ipam.Config[0].Subnet, n.Ipam.Config[0].Gateway
+					if a.eng.IPRange {
+						spec.IPRange = n.Ipam.Config[0].IPRange
+					}
 				}
 				if err := a.c.CreateNetwork(ctx, name, spec); err != nil {
 					return err

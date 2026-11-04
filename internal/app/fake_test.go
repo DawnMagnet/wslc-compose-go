@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -21,16 +22,21 @@ import (
 
 // fakeWSLC emulates just enough of the wslc CLI for orchestration tests.
 type fakeWSLC struct {
-	mu         sync.Mutex
-	calls      []string
-	containers []map[string]any
-	networks   []string
-	volumes    []string
-	images     map[string]bool
-	health     map[string][]string // per-container sequence of health states
-	logs       map[string]string
-	exited     map[string]int // containers that report exited with this code
-	failRun    string         // `run` of this container name fails
+	mu          sync.Mutex
+	calls       []string
+	containers  []map[string]any
+	networks    []string
+	volumes     []string
+	images      map[string]bool
+	health      map[string][]string // per-container sequence of health states
+	logs        map[string]string
+	exited      map[string]int            // containers that report exited with this code
+	failRun     string                    // `run` of this container name fails
+	failBuild   bool                      // `build` fails
+	failSession bool                      // `system session run` fails
+	version     string                    // `wslc --version` text; empty means 3.0.3.0
+	runtime     map[string]map[string]any // extra inspect fields keyed by container name
+	track       bool                      // record containers created by run/create
 }
 
 func (f *fakeWSLC) Run(ctx context.Context, args []string, stdio wslc.IO) error {
@@ -72,6 +78,9 @@ func (f *fakeWSLC) Run(ctx context.Context, args []string, stdio wslc.IO) error 
 	if args[0] == "run" && f.failRun != "" && slices.Contains(args, f.failRun) {
 		return errors.New("invalid volume spec")
 	}
+	if args[0] == "build" && f.failBuild {
+		return errors.New("build failed")
+	}
 	switch args[0] {
 	case "list":
 		return json.NewEncoder(out).Encode(f.containers)
@@ -88,13 +97,105 @@ func (f *fakeWSLC) Run(ctx context.Context, args []string, stdio wslc.IO) error 
 				f.health[name] = states[1:]
 			}
 		}
-		return json.NewEncoder(out).Encode([]any{map[string]any{"Name": name, "State": state}})
+		obj := map[string]any{"Name": name, "State": state}
+		for k, v := range f.runtime[name] {
+			obj[k] = v
+		}
+		return json.NewEncoder(out).Encode([]any{obj})
 	case "logs":
 		fmt.Fprint(out, f.logs[args[len(args)-1]])
-	case "--version":
-		fmt.Fprintln(out, "wslc 2.9.4.0")
+	case "--version", "version":
+		v := f.version
+		if v == "" {
+			v = "wslc version 3.0.3.0"
+		}
+		fmt.Fprintln(out, v)
 	}
+	if f.failSession && len(args) >= 2 && args[0] == "system" && args[1] == "session" {
+		return errors.New("iptables failed")
+	}
+	f.observe(args)
 	return nil
+}
+
+// observe updates the fake's view of containers, networks, volumes and images
+// after a successful mutation so a later command in the same test sees them.
+func (f *fakeWSLC) observe(args []string) {
+	switch args[0] {
+	case "run", "create":
+		f.remember(args)
+	case "remove":
+		f.forget(args[len(args)-1])
+	case "pull":
+		if len(args) > 1 {
+			if f.images == nil {
+				f.images = map[string]bool{}
+			}
+			f.images[args[1]] = true
+		}
+	case "build":
+		for i := 0; i < len(args)-1; i++ {
+			if args[i] == "-t" {
+				if f.images == nil {
+					f.images = map[string]bool{}
+				}
+				f.images[args[i+1]] = true
+			}
+		}
+	case "network":
+		if len(args) < 3 {
+			return
+		}
+		name := args[len(args)-1]
+		switch args[1] {
+		case "create":
+			f.networks = append(f.networks, name)
+		case "remove":
+			f.networks = slices.DeleteFunc(f.networks, func(n string) bool { return n == name })
+		}
+	case "volume":
+		if len(args) < 3 {
+			return
+		}
+		name := args[len(args)-1]
+		switch args[1] {
+		case "create":
+			f.volumes = append(f.volumes, name)
+		case "remove":
+			f.volumes = slices.DeleteFunc(f.volumes, func(n string) bool { return n == name })
+		}
+	}
+}
+
+func (f *fakeWSLC) forget(name string) {
+	f.containers = slices.DeleteFunc(f.containers, func(m map[string]any) bool {
+		n, _ := m["Name"].(string)
+		id, _ := m["Id"].(string)
+		return n == name || id == name
+	})
+}
+
+// remember keeps a container created by run/create so a later list/inspect
+// in the same test can see it (host-gateway programming reads inspect).
+func (f *fakeWSLC) remember(args []string) {
+	name := ""
+	labs := map[string]string{}
+	for i := 0; i < len(args)-1; i++ {
+		switch args[i] {
+		case "--name":
+			name = args[i+1]
+		case "-l":
+			if k, v, ok := strings.Cut(args[i+1], "="); ok {
+				labs[k] = v
+			}
+		}
+	}
+	if name == "" {
+		return
+	}
+	f.containers = append(f.containers, map[string]any{
+		"Id": name, "Name": name, "State": "running", "Labels": labs,
+	})
 }
 
 var hashRE = regexp.MustCompile(`config-hash=[0-9a-f]{64}`)
@@ -106,7 +207,8 @@ func (f *fakeWSLC) mutations() string {
 	var b strings.Builder
 	for _, c := range f.calls {
 		if strings.HasPrefix(c, "wslc list") || strings.HasPrefix(c, "wslc inspect") ||
-			strings.Contains(c, " list") || strings.HasPrefix(c, "wslc image inspect") {
+			strings.Contains(c, " list") || strings.HasPrefix(c, "wslc image inspect") ||
+			strings.HasPrefix(c, "wslc --version") || strings.HasPrefix(c, "wslc version") {
 			continue
 		}
 		b.WriteString(c + "\n")
@@ -129,6 +231,7 @@ func container(project, service string, n int, hash string, running bool) map[st
 type harness struct {
 	app    *App
 	fake   *fakeWSLC
+	paths  func(string) string
 	stdout bytes.Buffer
 	stderr bytes.Buffer
 }
@@ -136,15 +239,34 @@ type harness struct {
 func newHarness(t *testing.T, file string, mod func(*Options)) *harness {
 	t.Helper()
 	h := &harness{fake: &fakeWSLC{images: map[string]bool{}, health: map[string][]string{}, logs: map[string]string{}, exited: map[string]int{}}}
+	stateDir := t.TempDir()
 	o := Options{
 		Files: []string{golden.Compose(file)}, IgnoreOSEnv: true, Bin: "wslc",
 		DefaultDNS: []string{"1.1.1.1"}, PollEvery: time.Millisecond,
+		StateDir: stateDir,
 	}
 	if mod != nil {
 		mod(&o)
 	}
-	h.app = New(o, h.fake, golden.Paths, wslc.IO{Stdout: &h.stdout, Stderr: &h.stderr})
+	mapPath := func(p string) string {
+		slash := filepath.ToSlash(p)
+		root := filepath.ToSlash(stateDir)
+		if strings.HasPrefix(slash, root) {
+			return "C:/state" + strings.TrimPrefix(slash, root)
+		}
+		return golden.Paths(p)
+	}
+	h.paths = mapPath
+	h.app = New(o, h.fake, mapPath, wslc.IO{Stdout: &h.stdout, Stderr: &h.stderr})
 	return h
+}
+
+// reopen rebuilds the App so a new wslc version probe is taken. The fake's
+// containers and resources are kept.
+func (h *harness) reopen() {
+	h.stdout.Reset()
+	h.stderr.Reset()
+	h.app = New(h.app.o, h.fake, h.paths, wslc.IO{Stdout: &h.stdout, Stderr: &h.stderr})
 }
 
 func hashOf(t *testing.T, h *harness, service string) string {

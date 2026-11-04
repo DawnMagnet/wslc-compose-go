@@ -1,0 +1,11 @@
+wslc stop -t 2 full-web-1
+wslc remove -f full-web-1
+wslc stop -t 2 full-api-1
+wslc remove -f full-api-1
+wslc remove -f full-api-2
+wslc stop -t 2 full-db-1
+wslc remove -f full-db-1
+wslc network remove full_back
+wslc network remove full_front
+wslc volume remove full_cache
+wslc volume remove shared-dbdata

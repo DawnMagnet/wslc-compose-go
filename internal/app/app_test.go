@@ -3,6 +3,9 @@ package app
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -28,6 +31,879 @@ func TestUpFreshGolden(t *testing.T) {
 			}
 			golden.Assert(t, "up_"+strings.TrimSuffix(file, ".yaml")+".golden", h.fake.mutations())
 		})
+	}
+}
+
+func TestUpNetworksGolden(t *testing.T) {
+	h := newHarness(t, "networks.yaml", nil)
+	h.fake.networks = []string{"already"}
+	h.fake.images["alpine"] = true
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("up: %v\n%s", err, h.stderr.String())
+	}
+	golden.Assert(t, "up_networks.golden", h.fake.mutations())
+	dry := newHarness(t, "networks.yaml", func(o *Options) { o.DryRun = true })
+	dry.fake.networks = []string{"already"}
+	dry.fake.images["alpine"] = true
+	if err := dry.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatal(err)
+	}
+	golden.Assert(t, "dryrun_networks.golden", hashRE.ReplaceAllString(dry.stdout.String(), "config-hash=<hash>"))
+}
+
+func TestUpNetworksDegradeOnOldWslc(t *testing.T) {
+	h := newHarness(t, "networks.yaml", nil)
+	h.fake.version = "wslc version 3.0.1.0"
+	h.fake.networks = []string{"already"}
+	h.fake.images["alpine"] = true
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("up: %v\n%s", err, h.stderr.String())
+	}
+	m := h.fake.mutations()
+	if strings.Contains(m, "network connect") || strings.Contains(m, "--ip") || strings.Contains(m, "--ip-range") {
+		t.Fatalf("old wslc must not be sent gated flags:\n%s", m)
+	}
+	if !strings.Contains(m, "wslc run -d") || !strings.Contains(m, "--network nets_back") {
+		t.Fatalf("primary network should still be attached:\n%s", m)
+	}
+	if !strings.Contains(h.stderr.String(), "one network") || !strings.Contains(h.stderr.String(), "no --ip") {
+		t.Fatalf("missing degradation warnings:\n%s", h.stderr.String())
+	}
+	h.fake.calls = nil
+	h.app = New(Options{
+		Files: h.app.o.Files, IgnoreOSEnv: true, Bin: "wslc", Strict: true,
+		DefaultDNS: []string{"1.1.1.1"}, PollEvery: time.Millisecond,
+	}, h.fake, golden.Paths, wslc.IO{Stdout: &h.stdout, Stderr: &h.stderr})
+	if err := h.app.Up(ctx, UpOptions{Detach: true}); !errors.Is(err, project.ErrStrict) {
+		t.Fatalf("strict + old wslc: %v", err)
+	}
+}
+
+func TestUpSecretsGolden(t *testing.T) {
+	h := newHarness(t, "secrets.yaml", func(o *Options) {
+		o.Env = []string{"API_KEY=s3cret-value"}
+	})
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("up: %v\n%s", err, h.stderr.String())
+	}
+	m := h.fake.mutations()
+	if strings.Contains(m, "s3cret-value") || strings.Contains(m, "hello-config") {
+		t.Fatalf("secret bytes leaked onto the command line:\n%s", m)
+	}
+	golden.Assert(t, "up_secrets.golden", m)
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("second up without down: %v\n%s", err, h.stderr.String())
+	}
+	bodyAgain, err := os.ReadFile(filepath.Join(h.app.o.StateDir, "sec", "secrets", "api_key"))
+	if err != nil || string(bodyAgain) != "s3cret-value" {
+		t.Fatalf("secret after second up: %q %v", bodyAgain, err)
+	}
+	if !strings.Contains(h.stderr.String(), "external secret") {
+		t.Fatalf("external secret warning missing:\n%s", h.stderr.String())
+	}
+	body, err := os.ReadFile(filepath.Join(h.app.o.StateDir, "sec", "secrets", "api_key"))
+	if err != nil || string(body) != "s3cret-value" {
+		t.Fatalf("generated secret: %q %v", body, err)
+	}
+	if err := h.app.Down(ctx, DownOptions{Timeout: -1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(h.app.o.StateDir, "sec")); !os.IsNotExist(err) {
+		t.Fatalf("state dir not removed: %v", err)
+	}
+
+	h = newHarness(t, "secrets.yaml", func(o *Options) {
+		o.Env = []string{"API_KEY=s3cret-value"}
+	})
+	h.fake.version = "wslc version 3.0.1.0"
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("old wslc: %v\n%s", err, h.stderr.String())
+	}
+	old := h.fake.mutations()
+	if strings.Contains(old, "--secret") {
+		t.Fatalf("old wslc was sent build --secret:\n%s", old)
+	}
+	if !strings.Contains(old, ":/run/secrets/token:ro") || !strings.Contains(h.stderr.String(), "build --secret") {
+		t.Fatalf("runtime mounts should remain while build secrets warn:\n%s\n%s", old, h.stderr.String())
+	}
+	dry := newHarness(t, "secrets.yaml", func(o *Options) {
+		o.Env = []string{"API_KEY=s3cret-value"}
+		o.DryRun = true
+	})
+	if err := dry.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatal(err)
+	}
+	golden.Assert(t, "dryrun_secrets.golden", hashRE.ReplaceAllString(dry.stdout.String(), "config-hash=<hash>"))
+	if _, err := os.Stat(filepath.Join(dry.app.o.StateDir, "sec")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run must not write the state dir: %v", err)
+	}
+}
+
+func TestUpHostsGolden(t *testing.T) {
+	h := newHarness(t, "hosts.yaml", nil)
+	h.fake.track = true
+	h.fake.images["alpine"] = true
+	h.fake.runtime = map[string]map[string]any{
+		"hosts-web-1": {
+			"HostConfig": map[string]any{"NetworkMode": "hosts_default"},
+			"NetworkSettings": map[string]any{
+				"Networks": map[string]any{
+					"hosts_default": map[string]any{"IPAddress": "172.28.0.2", "Gateway": "172.28.0.1"},
+				},
+			},
+			"Ports": map[string]any{
+				"80/tcp": []any{map[string]any{"HostIp": "0.0.0.0", "HostPort": "8080"}},
+			},
+		},
+	}
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("up: %v\n%s", err, h.stderr.String())
+	}
+	m := h.fake.mutations()
+	if !strings.Contains(m, "exec -u 0 hosts-web-1") || !strings.Contains(m, "system session run") || !strings.Contains(m, "DNAT") {
+		t.Fatalf("missing extra_hosts or host-gateway rules:\n%s", m)
+	}
+	if strings.Contains(m, "exec -u 0 hosts-db-1") {
+		t.Fatal("db has no extra_hosts")
+	}
+	golden.Assert(t, "up_hosts.golden", m)
+	h.fake.calls = nil
+	if err := h.app.Down(ctx, DownOptions{Timeout: -1}); err != nil {
+		t.Fatal(err)
+	}
+	down := h.fake.mutations()
+	if !strings.Contains(down, "system session run") || strings.Contains(down, "DNAT") {
+		t.Fatalf("down should remove host-gateway chains without installing DNAT:\n%s", down)
+	}
+
+	old := newHarness(t, "hosts.yaml", nil)
+	old.fake.track = true
+	old.fake.version = "wslc version 3.0.1.0"
+	old.fake.images["alpine"] = true
+	old.fake.runtime = h.fake.runtime
+	if err := old.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("old wslc: %v\n%s", err, old.stderr.String())
+	}
+	if strings.Contains(old.fake.mutations(), "system session") || !strings.Contains(old.stderr.String(), "published-port loopback") {
+		t.Fatalf("old wslc must skip session rules and warn:\n%s\n%s", old.fake.mutations(), old.stderr.String())
+	}
+	if !strings.Contains(old.fake.mutations(), "exec -u 0 hosts-web-1") {
+		t.Fatal("/etc/hosts update should still run")
+	}
+	dry := newHarness(t, "hosts.yaml", func(o *Options) { o.DryRun = true })
+	dry.fake.track = true
+	dry.fake.images["alpine"] = true
+	dry.fake.runtime = h.fake.runtime
+	if err := dry.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatal(err)
+	}
+	golden.Assert(t, "dryrun_hosts.golden", hashRE.ReplaceAllString(dry.stdout.String(), "config-hash=<hash>"))
+}
+
+func TestLegacy301Goldens(t *testing.T) {
+	h := newHarness(t, "minimal.yaml", nil)
+	h.fake.version = "wslc version 3.0.1.0"
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("up minimal: %v\n%s", err, h.stderr.String())
+	}
+	golden.Assert(t, "legacy301_up_minimal.golden", h.fake.mutations())
+
+	h = newHarness(t, "full.yaml", nil)
+	h.fake.version = "wslc version 3.0.1.0"
+	h.fake.health["full-api-1"] = []string{"starting", "healthy"}
+	h.fake.health["full-api-2"] = []string{"healthy"}
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1, WaitTimeout: 5 * time.Second}); err != nil {
+		t.Fatalf("up full: %v\n%s", err, h.stderr.String())
+	}
+	golden.Assert(t, "legacy301_up_full.golden", h.fake.mutations())
+
+	h = newHarness(t, "full.yaml", nil)
+	h.fake.version = "wslc version 3.0.1.0"
+	h.fake.networks = []string{"full_front", "full_back", "unrelated"}
+	h.fake.volumes = []string{"full_cache", "shared-dbdata"}
+	h.fake.containers = append(h.fake.containers,
+		container("full", "db", 1, "h", true),
+		container("full", "web", 1, "h", true),
+		container("full", "api", 2, "h", false),
+		container("full", "api", 1, "h", true),
+		container("full", "legacy", 1, "h", true),
+	)
+	if err := h.app.Down(ctx, DownOptions{Volumes: true, Timeout: 2}); err != nil {
+		t.Fatal(err)
+	}
+	golden.Assert(t, "legacy301_down_full.golden", h.fake.mutations())
+}
+
+func TestDownNetworksSecretsHosts(t *testing.T) {
+	h := newHarness(t, "networks.yaml", nil)
+	h.fake.networks = []string{"nets_back", "nets_front", "already"}
+	if err := h.app.Down(ctx, DownOptions{Timeout: 2}); err != nil {
+		t.Fatal(err)
+	}
+	m := h.fake.mutations()
+	if strings.Contains(m, "already") {
+		t.Fatalf("external network removed:\n%s", m)
+	}
+	golden.Assert(t, "down_networks.golden", m)
+
+	h = newHarness(t, "secrets.yaml", func(o *Options) {
+		o.Env = []string{"API_KEY=s3cret-value"}
+	})
+	dir := filepath.Join(h.app.o.StateDir, "sec", "secrets")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "api_key"), []byte("s3cret-value"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	h.fake.networks = []string{"sec_default"}
+	h.fake.containers = append(h.fake.containers, container("sec", "app", 1, "h", true))
+	if err := h.app.Down(ctx, DownOptions{Timeout: 2}); err != nil {
+		t.Fatal(err)
+	}
+	golden.Assert(t, "down_secrets.golden", h.fake.mutations())
+	if _, err := os.Stat(filepath.Join(h.app.o.StateDir, "sec")); !os.IsNotExist(err) {
+		t.Fatalf("down left state dir: %v", err)
+	}
+
+	h = newHarness(t, "hosts.yaml", nil)
+	h.fake.networks = []string{"hosts_default"}
+	h.fake.containers = append(h.fake.containers, container("hosts", "web", 1, "h", true))
+	if err := h.app.Down(ctx, DownOptions{Timeout: 2}); err != nil {
+		t.Fatal(err)
+	}
+	golden.Assert(t, "down_hosts.golden", h.fake.mutations())
+
+	h = newHarness(t, "hosts.yaml", nil)
+	h.fake.failSession = true
+	h.fake.networks = []string{"hosts_default"}
+	err := h.app.Down(ctx, DownOptions{Timeout: 2})
+	if err == nil || !strings.Contains(err.Error(), "iptables") {
+		t.Fatalf("gateway failure must surface: %v", err)
+	}
+	if !strings.Contains(h.fake.mutations(), "network remove hosts_default") {
+		t.Fatalf("down must still remove networks:\n%s", h.fake.mutations())
+	}
+}
+
+func TestRunMultiNetwork(t *testing.T) {
+	h := newHarness(t, "networks.yaml", nil)
+	h.fake.networks = []string{"already", "nets_back", "nets_front"}
+	h.fake.images["alpine"] = true
+	if err := h.app.Run(ctx, RunOptions{Service: "app", Detach: true, NoDeps: true, Name: "oneoff", NoTTY: true}); err != nil {
+		t.Fatalf("run: %v\n%s", err, h.stderr.String())
+	}
+	m := h.fake.mutations()
+	if strings.Contains(m, "\nwslc run ") || strings.HasPrefix(m, "wslc run ") {
+		t.Fatalf("detached multi-network run must create, connect, then start:\n%s", m)
+	}
+	golden.Assert(t, "run_multinet.golden", m)
+}
+
+func TestUpRollbackRemovesNewState(t *testing.T) {
+	h := newHarness(t, "secrets.yaml", func(o *Options) {
+		o.Env = []string{"API_KEY=s3cret-value"}
+	})
+	h.fake.failRun = "sec-app-1"
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err == nil {
+		t.Fatal("up must fail")
+	}
+	if _, err := os.Stat(filepath.Join(h.app.o.StateDir, "sec")); !os.IsNotExist(err) {
+		t.Fatalf("rollback left state dir: %v", err)
+	}
+}
+
+func TestOldWslcIPAMIsWarning(t *testing.T) {
+	cases := []struct {
+		name, body, warn string
+	}{
+		{"replicas", `
+name: replicas
+services:
+  web:
+    image: alpine
+    deploy:
+      replicas: 2
+    networks:
+      n:
+        ipv4_address: 10.0.0.10
+networks:
+  n:
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24
+          gateway: 10.0.0.1
+`, "static IPv4"},
+		{"outside", `
+name: outside
+services:
+  web:
+    image: alpine
+    networks:
+      n:
+        ipv4_address: 10.1.0.10
+networks:
+  n:
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24
+          gateway: 10.0.0.1
+`, "static IPv4"},
+		{"gateway", `
+name: gateway
+services:
+  web:
+    image: alpine
+    networks: [n]
+networks:
+  n:
+    ipam:
+      config:
+        - gateway: 10.0.0.1
+`, "requires a subnet"},
+		{"slash32", `
+name: slash32
+services:
+  web:
+    image: alpine
+    networks: [n]
+networks:
+  n:
+    ipam:
+      config:
+        - subnet: 10.0.0.0/32
+`, "broadcast"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "compose.yaml")
+			if err := os.WriteFile(path, []byte(strings.TrimSpace(tc.body)+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			h := newHarness(t, "minimal.yaml", func(o *Options) { o.Files = []string{path} })
+			h.fake.version = "wslc version 3.0.1.0"
+			h.fake.images["alpine"] = true
+			if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+				t.Fatalf("3.0.1 up: %v\n%s", err, h.stderr.String())
+			}
+			if !strings.Contains(h.stderr.String(), tc.warn) {
+				t.Fatalf("missing warning %q in\n%s", tc.warn, h.stderr.String())
+			}
+			if tc.name == "gateway" || tc.name == "slash32" {
+				strict := newHarness(t, "minimal.yaml", func(o *Options) {
+					o.Files = []string{path}
+					o.Strict = true
+				})
+				strict.fake.version = "wslc version 3.0.1.0"
+				strict.fake.images["alpine"] = true
+				if err := strict.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+					t.Fatalf("v0.1.5 accepted this under --strict: %v\n%s", err, strict.stderr.String())
+				}
+			}
+		})
+	}
+}
+
+func TestSubnetPassedThroughOnCurrentWslc(t *testing.T) {
+	cases := []struct {
+		name, body, subnet, warn string
+		external                 bool
+	}{
+		{"ipv6", `
+name: v6only
+services:
+  web:
+    image: alpine
+    networks: [n]
+networks:
+  n:
+    ipam:
+      config:
+        - subnet: fd00:1::/64
+`, "fd00:1::/64", "invalid IPv4 subnet", false},
+		{"slash31", `
+name: slash31
+services:
+  web:
+    image: alpine
+    networks: [n]
+networks:
+  n:
+    ipam:
+      config:
+        - subnet: 10.0.0.0/31
+`, "10.0.0.0/31", "broadcast", false},
+		{"external", `
+name: extipam
+services:
+  web:
+    image: alpine
+    networks:
+      ext:
+        ipv4_address: 10.9.9.9
+networks:
+  ext:
+    external: true
+    name: already
+    ipam:
+      config:
+        - subnet: fd00:1::/64
+`, "", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "compose.yaml")
+			if err := os.WriteFile(path, []byte(strings.TrimSpace(tc.body)+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			h := newHarness(t, "minimal.yaml", func(o *Options) { o.Files = []string{path} })
+			h.fake.images["alpine"] = true
+			if tc.external {
+				h.fake.networks = []string{"already"}
+			}
+			if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+				t.Fatalf("up: %v\n%s", err, h.stderr.String())
+			}
+			m := h.fake.mutations()
+			if tc.external {
+				if strings.Contains(m, "network create") {
+					t.Fatalf("external network was created:\n%s", m)
+				}
+				if strings.Contains(h.stderr.String(), "invalid IPv4") || strings.Contains(h.stderr.String(), "subnet") {
+					t.Fatalf("external network was validated:\n%s", h.stderr.String())
+				}
+				return
+			}
+			if !strings.Contains(m, "network create") || !strings.Contains(m, "--subnet "+tc.subnet) {
+				t.Fatalf("network create missing --subnet %s:\n%s", tc.subnet, m)
+			}
+			if !strings.Contains(h.stderr.String(), tc.warn) {
+				t.Fatalf("missing warning %q in\n%s", tc.warn, h.stderr.String())
+			}
+		})
+	}
+}
+
+func TestIPRangeWithoutIPv4SubnetDoesNotMutate(t *testing.T) {
+	cases := []struct {
+		name, body string
+	}{
+		{"no-subnet", `
+name: nosub
+services:
+  web:
+    image: alpine:missing
+    networks: [n]
+networks:
+  n:
+    ipam:
+      config:
+        - ip_range: 10.1.0.0/24
+`},
+		{"ipv6", `
+name: v6range
+services:
+  web:
+    image: alpine:missing
+    networks: [n]
+networks:
+  n:
+    ipam:
+      config:
+        - subnet: fd00:1::/64
+          ip_range: fd00:1::/80
+`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "compose.yaml")
+			if err := os.WriteFile(path, []byte(strings.TrimSpace(tc.body)+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			h := newHarness(t, "minimal.yaml", func(o *Options) { o.Files = []string{path} })
+			err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1})
+			if err == nil || !strings.Contains(err.Error(), "ip_range") {
+				t.Fatalf("up: %v", err)
+			}
+			assertVersionOnly(t, h.fake)
+		})
+	}
+}
+
+func TestOldWslcOmitsIPRange(t *testing.T) {
+	cases := []struct {
+		name, body, subnet string
+	}{
+		{"no-subnet", `
+name: nosub
+services:
+  web:
+    image: alpine
+    networks: [n]
+networks:
+  n:
+    ipam:
+      config:
+        - ip_range: 10.1.0.0/24
+`, ""},
+		{"ipv6", `
+name: v6range
+services:
+  web:
+    image: alpine
+    networks: [n]
+networks:
+  n:
+    ipam:
+      config:
+        - subnet: fd00:1::/64
+          ip_range: fd00:1::/80
+`, "fd00:1::/64"},
+		{"outside", `
+name: range
+services:
+  web:
+    image: alpine
+    networks: [n]
+networks:
+  n:
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24
+          ip_range: 10.1.0.0/24
+`, "10.0.0.0/24"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "compose.yaml")
+			if err := os.WriteFile(path, []byte(strings.TrimSpace(tc.body)+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			h := newHarness(t, "minimal.yaml", func(o *Options) { o.Files = []string{path} })
+			h.fake.version = "wslc version 3.0.1.0"
+			h.fake.images["alpine"] = true
+			if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+				t.Fatalf("3.0.1 up: %v\n%s", err, h.stderr.String())
+			}
+			m := h.fake.mutations()
+			if strings.Contains(m, "--ip-range") {
+				t.Fatalf("3.0.1 emitted --ip-range:\n%s", m)
+			}
+			if !strings.Contains(m, "network create") {
+				t.Fatalf("3.0.1 did not create the network:\n%s", m)
+			}
+			if tc.subnet != "" && !strings.Contains(m, "--subnet "+tc.subnet) {
+				t.Fatalf("3.0.1 missing --subnet %s:\n%s", tc.subnet, m)
+			}
+			if !strings.Contains(h.stderr.String(), "ip_range") {
+				t.Fatalf("missing ip_range warning:\n%s", h.stderr.String())
+			}
+		})
+	}
+}
+
+func TestIPRangeOutsideSubnetDoesNotMutate(t *testing.T) {
+	body := `
+name: range
+services:
+  web:
+    image: alpine:missing
+    networks: [n]
+networks:
+  n:
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24
+          ip_range: 10.1.0.0/24
+`
+	path := filepath.Join(t.TempDir(), "compose.yaml")
+	if err := os.WriteFile(path, []byte(strings.TrimSpace(body)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := newHarness(t, "minimal.yaml", func(o *Options) { o.Files = []string{path} })
+	err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1})
+	if err == nil || !strings.Contains(err.Error(), "ip_range") {
+		t.Fatalf("up: %v", err)
+	}
+	if m := h.fake.mutations(); m != "" {
+		t.Fatalf("ip_range failure mutated wslc:\n%s", m)
+	}
+}
+
+func TestRunValidatesBeforeCreate(t *testing.T) {
+	body := `
+name: badrun
+services:
+  web:
+    image: alpine:missing
+    networks:
+      n:
+        ipv4_address: 10.0.0.10
+networks:
+  n:
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24
+          ip_range: 10.1.0.0/24
+`
+	path := filepath.Join(t.TempDir(), "compose.yaml")
+	if err := os.WriteFile(path, []byte(strings.TrimSpace(body)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := newHarness(t, "minimal.yaml", func(o *Options) { o.Files = []string{path} })
+	err := h.app.Run(ctx, RunOptions{Service: "web", NoDeps: true, NoTTY: true})
+	if err == nil || !strings.Contains(err.Error(), "ip_range") {
+		t.Fatalf("run: %v", err)
+	}
+	if m := h.fake.mutations(); m != "" {
+		t.Fatalf("validation failure mutated wslc:\n%s", m)
+	}
+}
+
+func TestStrictUnknownAllowsInspectAndDown(t *testing.T) {
+	strict := func() *harness {
+		t.Helper()
+		h := newHarness(t, "minimal.yaml", func(o *Options) { o.Strict = true })
+		h.fake.version = "not a version"
+		return h
+	}
+	up := strict()
+	if err := up.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); !errors.Is(err, project.ErrStrict) {
+		t.Fatalf("up: %v", err)
+	}
+	assertVersionOnly(t, up.fake)
+
+	down := strict()
+	if err := down.app.Down(ctx, DownOptions{Timeout: -1}); err != nil {
+		t.Fatalf("down: %v\n%s", err, down.stderr.String())
+	}
+	if m := down.fake.mutations(); m != "" {
+		t.Fatalf("down mutated:\n%s", m)
+	}
+	ps := strict()
+	if err := ps.app.Ps(ctx, PsOptions{}); err != nil {
+		t.Fatalf("ps: %v\n%s", err, ps.stderr.String())
+	}
+	if m := ps.fake.mutations(); m != "" {
+		t.Fatalf("ps mutated:\n%s", m)
+	}
+	stop := strict()
+	if err := stop.app.Stop(ctx, nil, -1); err != nil {
+		t.Fatalf("stop: %v\n%s", err, stop.stderr.String())
+	}
+	if m := stop.fake.mutations(); m != "" {
+		t.Fatalf("stop mutated:\n%s", m)
+	}
+}
+
+func TestStrictUnknownStopsRunAndBuild(t *testing.T) {
+	run := newHarness(t, "minimal.yaml", func(o *Options) { o.Strict = true })
+	run.fake.version = "not a version"
+	err := run.app.Run(ctx, RunOptions{Service: "hello", NoDeps: true, NoTTY: true})
+	if !errors.Is(err, project.ErrStrict) || !strings.Contains(err.Error(), "version unknown") {
+		t.Fatalf("run --no-deps: %v", err)
+	}
+	assertVersionOnly(t, run.fake)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yaml")
+	body := "name: bld\nservices:\n  web:\n    image: example/web:dev\n    build:\n      context: .\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bld := newHarness(t, "minimal.yaml", func(o *Options) {
+		o.Files = []string{path}
+		o.Strict = true
+	})
+	bld.fake.version = "not a version"
+	err = bld.app.Build(ctx, BuildOptions{})
+	if !errors.Is(err, project.ErrStrict) || !strings.Contains(err.Error(), "version unknown") {
+		t.Fatalf("build: %v\n%s", err, bld.stderr.String())
+	}
+	assertVersionOnly(t, bld.fake)
+}
+
+func assertVersionOnly(t *testing.T, f *fakeWSLC) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.calls) == 0 {
+		t.Fatal("expected a version probe")
+	}
+	for _, c := range f.calls {
+		if !strings.HasPrefix(c, "wslc --version") && !strings.HasPrefix(c, "wslc version") {
+			t.Fatalf("wslc call before the strict failure: %s", c)
+		}
+	}
+}
+
+func TestUnknownVersionSkipsImageChange(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yaml")
+	write := func(image string) {
+		t.Helper()
+		body := "name: minimal\nservices:\n  hello:\n    image: " + image + "\n    ports: [\"8080:80\"]\n"
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("nginx:alpine")
+	h := newHarness(t, "minimal.yaml", func(o *Options) { o.Files = []string{path} })
+	h.fake.images["nginx:alpine"] = true
+	h.fake.images["nginx:latest"] = true
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("up: %v\n%s", err, h.stderr.String())
+	}
+	write("nginx:latest")
+	h.fake.version = "not a version"
+	h.fake.calls = nil
+	h.reopen()
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("non-strict: %v\n%s", err, h.stderr.String())
+	}
+	if m := h.fake.mutations(); strings.Contains(m, "run ") || strings.Contains(m, "remove ") {
+		t.Fatalf("unknown version recreated hello:\n%s", m)
+	}
+	if !strings.Contains(h.stderr.String(), "service hello") || !strings.Contains(h.stderr.String(), "not applied") {
+		t.Fatalf("missing per-service warning:\n%s", h.stderr.String())
+	}
+	h.app.o.Strict = true
+	h.fake.calls = nil
+	h.reopen()
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); !errors.Is(err, project.ErrStrict) {
+		t.Fatalf("strict unknown version: %v", err)
+	}
+}
+
+func TestUpgradeRecreatesOnlyChangedCommands(t *testing.T) {
+	h := newHarness(t, "upgrade.yaml", nil)
+	h.fake.version = "wslc version 3.0.1.0"
+	h.fake.images["alpine"] = true
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("3.0.1: %v\n%s", err, h.stderr.String())
+	}
+	h.fake.version = "wslc version 3.0.3.0"
+	h.fake.calls = nil
+	h.reopen()
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("3.0.3: %v\n%s", err, h.stderr.String())
+	}
+	m := h.fake.mutations()
+	for _, name := range []string{"upg-multi-1", "upg-addressed-1"} {
+		if !strings.Contains(m, name) {
+			t.Errorf("upgrade should recreate %s:\n%s", name, m)
+		}
+	}
+	for _, name := range []string{"upg-plain-1", "upg-extsec-1", "upg-extcfg-1", "upg-ranged-1", "upg-built-1"} {
+		if strings.Contains(m, name) {
+			t.Errorf("upgrade recreated %s whose run command did not change:\n%s", name, m)
+		}
+	}
+}
+
+func TestUnchangedHashSurvivesUpgrade(t *testing.T) {
+	const helloHash = "0df62ea0f7a4228c79ebe55b0d198f8ce5de02a73ed48a3d6d6d15a7257493bc"
+	for _, version := range []string{"wslc version 3.0.1.0", "wslc version 3.0.3.0"} {
+		h := newHarness(t, "minimal.yaml", nil)
+		h.fake.version = version
+		h.fake.networks = []string{"minimal_default"}
+		h.fake.images["nginx:alpine"] = true
+		h.fake.containers = append(h.fake.containers, container("minimal", "hello", 1, helloHash, true))
+		if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+			t.Fatalf("%s: %v\n%s", version, err, h.stderr.String())
+		}
+		if m := h.fake.mutations(); m != "" {
+			t.Fatalf("%s recreated an unchanged container:\n%s", version, m)
+		}
+	}
+}
+
+func TestUnknownVersionDoesNotRecreate(t *testing.T) {
+	h := newHarness(t, "networks.yaml", nil)
+	h.fake.networks = []string{"already"}
+	h.fake.images["alpine"] = true
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("create: %v\n%s", err, h.stderr.String())
+	}
+	h.fake.calls = nil
+	h.reopen()
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("3.0.3 baseline: %v\n%s", err, h.stderr.String())
+	}
+	if m := h.fake.mutations(); m != "" {
+		t.Fatalf("3.0.3 baseline mutated:\n%s", m)
+	}
+	h.fake.version = "not a version"
+	h.fake.calls = nil
+	h.reopen()
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("unknown version: %v\n%s", err, h.stderr.String())
+	}
+	if m := h.fake.mutations(); m != "" {
+		t.Fatalf("unknown version recreated containers:\n%s", m)
+	}
+	if !strings.Contains(h.stderr.String(), "will not be recreated") {
+		t.Fatalf("missing warning:\n%s", h.stderr.String())
+	}
+	if strings.Contains(h.stderr.String(), "not applied") {
+		t.Fatalf("unchanged 3.0.3 config must not warn:\n%s", h.stderr.String())
+	}
+	h.fake.version = "wslc version 3.0.3.0"
+	h.fake.calls = nil
+	h.reopen()
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("recovered: %v\n%s", err, h.stderr.String())
+	}
+	if m := h.fake.mutations(); m != "" {
+		t.Fatalf("recovered version mutated:\n%s", m)
+	}
+
+	strict := newHarness(t, "networks.yaml", func(o *Options) { o.Strict = true })
+	strict.fake.version = "not a version"
+	strict.fake.networks = []string{"already"}
+	strict.fake.images["alpine"] = true
+	if err := strict.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); !errors.Is(err, project.ErrStrict) {
+		t.Fatalf("strict + unknown version: %v", err)
+	}
+}
+
+func TestRunAndBuildFailureRemoveState(t *testing.T) {
+	h := newHarness(t, "secrets.yaml", func(o *Options) {
+		o.Env = []string{"API_KEY=s3cret-value"}
+	})
+	h.fake.images["alpine"] = true
+	h.fake.images["busybox"] = true
+	h.fake.networks = []string{"sec_default"}
+	h.fake.failRun = "oneoff"
+	if err := h.app.Run(ctx, RunOptions{Service: "app", NoDeps: true, NoTTY: true, Name: "oneoff"}); err == nil {
+		t.Fatal("run must fail")
+	}
+	if _, err := os.Stat(filepath.Join(h.app.o.StateDir, "sec")); !os.IsNotExist(err) {
+		t.Fatalf("failed run left state dir: %v", err)
+	}
+
+	h = newHarness(t, "secrets.yaml", func(o *Options) {
+		o.Env = []string{"API_KEY=s3cret-value"}
+	})
+	h.fake.failBuild = true
+	if err := h.app.Build(ctx, BuildOptions{}); err == nil {
+		t.Fatal("build must fail")
+	}
+	if _, err := os.Stat(filepath.Join(h.app.o.StateDir, "sec")); !os.IsNotExist(err) {
+		t.Fatalf("failed build left state dir: %v", err)
+	}
+}
+
+func TestDefaultStateRoot(t *testing.T) {
+	root, err := defaultStateRoot()
+	if err != nil || root == "" {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		local := os.Getenv("LOCALAPPDATA")
+		if local != "" && !strings.HasPrefix(strings.ToLower(root), strings.ToLower(local)) {
+			t.Fatalf("state root %s is not under LocalAppData %s", root, local)
+		}
 	}
 }
 
@@ -117,8 +993,8 @@ func TestStrictBlocksBeforeAnyCall(t *testing.T) {
 	if err := h.app.Up(ctx, UpOptions{Detach: true}); !errors.Is(err, project.ErrStrict) {
 		t.Fatalf("expected ErrStrict, got %v", err)
 	}
-	if len(h.fake.calls) != 0 {
-		t.Fatalf("strict mode must fail before calling wslc: %v", h.fake.calls)
+	if len(h.fake.calls) != 1 || !strings.Contains(h.fake.calls[0], "--version") {
+		t.Fatalf("strict mode must fail before mutating, got %v", h.fake.calls)
 	}
 }
 
@@ -250,7 +1126,7 @@ func TestBuildPullConfigVersion(t *testing.T) {
 	}
 	h.stdout.Reset()
 	h.app.PrintVersion(ctx, false)
-	if !strings.Contains(h.stdout.String(), "wslc: wslc 2.9.4.0") {
+	if !strings.Contains(h.stdout.String(), "wslc: wslc version 3.0.3.0") {
 		t.Fatalf("version: %s", h.stdout.String())
 	}
 }

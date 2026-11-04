@@ -31,6 +31,20 @@ type Translator struct {
 	Paths      paths.Mapper // host path mapper; nil means identity
 	DefaultDNS []string     // applied when a service sets no dns; nil disables
 	Meta       labels.Meta  // project-wide labels
+	// OmitStaticIP drops --ip. Set when the probed wslc predates VerEndpoints.
+	OmitStaticIP bool
+	// Mounts are read-only secret and config binds, keyed by service name.
+	Mounts map[string][]FileMount
+	// SecretFiles maps a secret name to the host file passed to `build --secret`.
+	SecretFiles map[string]string
+	// AllowBuildSecrets adds `build --secret` when the probed wslc accepts it.
+	AllowBuildSecrets bool
+}
+
+// FileMount is a read-only secret or config bind.
+type FileMount struct {
+	Source string
+	Target string
 }
 
 // RunOptions customizes a single `wslc run` invocation.
@@ -102,12 +116,17 @@ func (t *Translator) Run(s types.ServiceConfig, o RunOptions) []string {
 		name = ContainerName(t.Project, s, o.Number)
 	}
 	a.add("--name", name)
-	a.add(labels.Flags(labels.Merge(s.Labels, t.Meta.Container(s.Name, o.Number, o.Hash)))...)
+	labs := labels.Merge(s.Labels, t.Meta.Container(s.Name, o.Number, o.Hash))
+	if UsesHostGateway(s.ExtraHosts) {
+		labs[labels.HostGateway] = "v1"
+	}
+	a.add(labels.Flags(labs)...)
 	a.each("-e", append(Env(s.Environment), o.ExtraEnv...))
 	if o.Publish {
 		a.each("-p", Ports(s.Ports))
 	}
 	a.add(t.volumes(s)...)
+	a.add(t.fileMounts(s)...)
 	a.add(t.network(s, o.Number > 0)...)
 	a.opt("-h", s.Hostname)
 	a.opt("--domainname", s.DomainName)
@@ -163,6 +182,20 @@ func (t *Translator) Build(s types.ServiceConfig, noCache, pull bool) []string {
 		a.add("-f", t.path(df))
 	}
 	a.each("--build-arg", Env(b.Args))
+	if t.AllowBuildSecrets {
+		for _, raw := range b.Secrets {
+			ref := types.FileReferenceConfig(raw)
+			id := ref.Source
+			if ref.Target != "" {
+				id = ref.Target
+			}
+			src := t.SecretFiles[ref.Source]
+			if src == "" {
+				continue
+			}
+			a.add("--secret", "id="+id+",src="+t.path(src))
+		}
+	}
 	a.opt("--target", b.Target)
 	a.add(labels.Flags(b.Labels)...)
 	if b.Pull || pull {
@@ -296,6 +329,14 @@ func (t *Translator) volumes(s types.ServiceConfig) []string {
 	return a
 }
 
+func (t *Translator) fileMounts(s types.ServiceConfig) []string {
+	var a argv
+	for _, m := range t.Mounts[s.Name] {
+		a.add("-v", t.path(m.Source)+":"+m.Target+":ro")
+	}
+	return a
+}
+
 // Network returns the primary project network key of a service, or "" if
 // the service uses network_mode or has no networks.
 func Network(s types.ServiceConfig) string {
@@ -315,20 +356,16 @@ func (t *Translator) network(s types.ServiceConfig, aliases bool) []string {
 	if key == "" {
 		return nil
 	}
-	name := key
-	if n, ok := t.Project.Networks[key]; ok && n.Name != "" {
-		name = n.Name
+	a := argv{"--network", t.networkName(key)}
+	if !t.OmitStaticIP {
+		if cfg := s.Networks[key]; cfg != nil && cfg.Ipv4Address != "" {
+			a.add("--ip", cfg.Ipv4Address)
+		}
 	}
-	a := argv{"--network", name}
 	if !aliases {
 		return a
 	}
-	names := []string{s.Name}
-	if cfg := s.Networks[key]; cfg != nil {
-		names = append(names, cfg.Aliases...)
-	}
-	slices.Sort(names)
-	a.each("--network-alias", slices.Compact(names))
+	a.each("--network-alias", endpointAliases(s, key))
 	return a
 }
 

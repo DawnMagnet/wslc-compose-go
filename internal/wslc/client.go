@@ -241,6 +241,7 @@ type NetworkSpec struct {
 	Internal bool
 	Subnet   string
 	Gateway  string
+	IPRange  string // --ip-range; empty when the binary predates VerEndpoints
 	Options  map[string]string
 	Labels   map[string]string
 }
@@ -256,6 +257,9 @@ func (c *Client) CreateNetwork(ctx context.Context, name string, s NetworkSpec) 
 	}
 	if s.Gateway != "" {
 		args = append(args, "--gateway", s.Gateway)
+	}
+	if s.IPRange != "" {
+		args = append(args, "--ip-range", s.IPRange)
 	}
 	if s.Internal {
 		args = append(args, "--internal")
@@ -355,6 +359,18 @@ func (c *Client) Logs(ctx context.Context, name string, o LogOptions, stdio IO) 
 // Exec runs a prepared `exec ...` argv attached to stdio.
 func (c *Client) Exec(ctx context.Context, args []string, stdio IO) error {
 	return c.stream(ctx, stdio, args...)
+}
+
+// InspectRaw returns the unparsed inspect document. Dry-run with no wslc
+// yields an empty slice.
+func (c *Client) InspectRaw(ctx context.Context, name string) ([]byte, error) {
+	return c.query(ctx, "inspect", name)
+}
+
+// Session runs a script inside the wslc utility VM (`system session run`).
+// Host-gateway published-port rules need this, which arrived in wslc 3.0.3.0.
+func (c *Client) Session(ctx context.Context, script string) error {
+	return c.mutate(ctx, IO{}, "system", "session", "run", "sh", "-c", script)
 }
 
 // Version returns `wslc --version` output, or "" when unavailable.
