@@ -31,9 +31,11 @@ compose.yaml ──► project (compose-go loading + policy check + config hash)
 
 ## Design principles
 
-1. **State lives only in labels.** There is no local state file. `ps`/`down`/`up` find containers via
+1. **Container state lives in labels.** `ps`/`down`/`up` find containers via
    `wslc list --filter label=com.docker.compose.project=<p>` and use `com.wslc.compose.config-hash`
-   to decide whether a container must be recreated.
+   to decide whether a container must be recreated. Generated `environment:` / `content:`
+   secrets and configs are the exception: they are files under the project state directory,
+   removed by `down`.
 2. **Pure core.** `translate` and `plan` perform no I/O; golden tests lock the complete command sequence.
 3. **One boundary interface.** The only external dependency is `wslc.Runner` (a single method). Tests inject
    a fake; dry-run is implemented inside the client, invisible to callers.
@@ -50,12 +52,17 @@ compose.yaml ──► project (compose-go loading + policy check + config hash)
 
 1. Load the project → policy check (with `--strict`, any WARN aborts before wslc is called) →
    rewrite anonymous volumes into project-scoped named volumes (`project.NameAnonymousVolumes`) → apply `--scale`.
-2. Create the required networks (ipam subnet/gateway, internal, driver_opts, labels) and named volumes
-   (with project/volume labels); external resources are only checked for existence.
+2. Create every network the selected services join (ipam subnet/gateway/ip_range, internal, driver_opts, labels)
+   and named volumes (with project/volume labels); external resources are only checked for existence.
+   Materialise `environment:` / `content:` secrets and configs under the project state directory.
 3. Images: services with `build` are built on `--build`, `pull_policy: build` or a missing image; all others are
    pulled according to `pull_policy` (always / missing / never), each image once. Rebuilt services are recreated.
 4. Walk services in dependency order: wait for dependency conditions first (`service_healthy` polls
    `wslc inspect`; `service_completed_successfully` waits for exit code 0), then apply the planned action.
+   A service on one network uses `wslc run -d`. A service on several networks uses `wslc create` (primary
+   network, `--ip`, aliases), `wslc network connect` for each remaining endpoint, then `wslc start`.
+   `extra_hosts` is applied with `wslc exec` after start. When any service requests `host-gateway` and wslc
+   is new enough, one `wslc system session run` installs the project's iptables rules.
 5. Handle orphan containers (warn, or remove with `--remove-orphans`).
    Every network, volume and container created in steps 2–5 is registered with `rollback`; any failure removes
    them in reverse order (best effort; no rollback in dry-run).

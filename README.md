@@ -27,7 +27,10 @@ profiles, env_file and extends are all handled upstream), then translates every 
 
 > Status: preview (v0.1). Unit and golden tests cover every wslc interaction (mocked Runner). Verified on
 > Windows 11 + **wslc 3.0.1**: `up`/`up -d`/`down -v`/`ps`/`logs`/`exec`/`run`/`build`/`pull`/`--scale`,
-> healthcheck waits, anonymous volumes and **GPU (RTX 5060 Ti, CUDA)**. Please attach `--dry-run` output to issues.
+> healthcheck waits, anonymous volumes and **GPU (RTX 5060 Ti, CUDA)**.
+> Multi-network attach, static IPv4, `ip_range`, secrets/configs, `build --secret`, `extra_hosts` and
+> host-gateway session rules are covered by the mocked Runner and golden files only — they need a
+> **wslc 3.0.3.0** (or newer) machine before they can be treated as verified. Please attach `--dry-run` output to issues.
 
 ## Contents
 
@@ -221,8 +224,11 @@ Global flags (before or after the subcommand):
 | `environment`, `env_file` | `-e K=V` (env_file merged by compose-go, sorted by key) |
 | `ports` (host_ip, ranges, udp) | `-p [ip:]host:container[/udp]` |
 | `volumes` bind / named / anonymous / tmpfs (with size), `tmpfs`, read-only mounts | `-v` / `--tmpfs`; bind sources become Windows forward-slash paths. wslc rejects bare paths, so anonymous volumes (`- /data`) become project-scoped named volumes `<project>_<service>_<path>_anon` (kept across recreation, removed by `down -v`) |
-| `networks` (default `<project>_default`, `aliases`), `network_mode: none` | `--network` + `--network-alias <service>` + aliases |
-| Top-level `networks`: `driver`, `internal`, `ipam.config[0].subnet/gateway`, `driver_opts`, `labels`, `external`, `name` | `wslc network create …` |
+| `networks` (default `<project>_default`, `aliases`, `priority`, `ipv4_address`), `network_mode: none` | one network: `run --network --ip --network-alias`. Several: `create` on the highest-priority network, `network connect` the rest (`--ip`, `--network-alias`, `--link-local-ip`, `--driver-opt`), then `start` |
+| Top-level `networks`: `driver`, `internal`, `ipam.config[0].subnet/gateway/ip_range`, `driver_opts`, `labels`, `external`, `name` | `wslc network create --subnet --gateway --ip-range -o …` (name prefixed with the project unless `external` or `name:`) |
+| `secrets` / `configs` (`file`, `environment`, `content`, `target`; short and long syntax) | read-only `-v` at `/run/secrets/<name>` or `/<name>` (or `target`). `environment` / `content` are written under the project state dir and removed by `down` |
+| `build.secrets` | `wslc build --secret id=<target\|source>,src=<path>` when wslc is 3.0.3.0 or newer |
+| `extra_hosts`, including `host-gateway` | `wslc exec -u 0` rewrites marked `/etc/hosts` lines after start. `host-gateway` is the container's default gateway. Published-port hairpin (DNAT/MASQUERADE) runs via `wslc system session run` on wslc 3.0.3.0+ and is removed by `down` |
 | Top-level `volumes`: `name`, `external`, `labels` | `wslc volume create -l com.docker.compose.project=… -l com.docker.compose.volume=…` |
 | `working_dir`, `user`, `hostname`, `domainname`, `labels` | `-w` `-u` `-h` `--domainname` `-l` |
 | `dns`, `dns_search`, `dns_opt` | `--dns` `--dns-search` `--dns-option` |
@@ -242,19 +248,68 @@ Global flags (before or after the subcommand):
 | `depends_on: service_healthy` | Polls `State.Health.Status` from `wslc inspect`; if wslc never reports health, after 3 polls "running" counts as healthy, with a warning |
 | `ports[].mode: host` | Published as a normal port (INFO, does not trip `--strict`) |
 
+### Example
+
+Networks, a generated secret and host-gateway in one file. `wslc-compose up -d --dry-run` prints the `create` / `network connect` / `start` sequence, the read-only secret mount and the session rules (the last only when wslc is 3.0.3.0 or newer, or when `--dry-run` cannot see a binary and assumes that version).
+
+```yaml
+services:
+  web:
+    image: nginx:alpine
+    ports: ["8080:80"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    secrets: [token]
+    networks:
+      front:
+        ipv4_address: 172.28.0.10
+      back:
+        priority: 10
+secrets:
+  token:
+    environment: TOKEN   # written under the project state dir, mounted at /run/secrets/token
+networks:
+  front:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+          gateway: 172.28.0.1
+          ip_range: 172.28.0.128/25
+  back: {}
+```
+
+**Partial** (implemented, with a warning where wslc cannot match Compose; warnings are errors under `--strict`)
+
+| Field | What happens |
+|---|---|
+| `secrets`/`configs` `uid`/`gid` | Bind mounts cannot set them; the file is still mounted |
+| `secrets`/`configs` `mode` on a `file:` source | Host file mode is kept. `mode` on `environment`/`content` is applied to the generated file |
+| `external: true` secrets/configs | Mount is skipped |
+| `ipv6_address`, `enable_ipv6` | wslc networks are IPv4-only |
+| Primary endpoint `driver_opts` / `link_local_ips` | No `wslc run` flag; applied only when that network is added with `network connect` |
+| `ipam.config` past the first entry, `aux_addresses`, custom IPAM driver/options | First subnet/gateway/`ip_range` only |
+| `extra_hosts` | Applied after start, so the entrypoint may already have read `/etc/hosts` (INFO, does not trip `--strict`) |
+| `host-gateway` published-port loopback on wslc &lt; 3.0.3.0 | `/etc/hosts` is still updated; session DNAT is skipped |
+| `build.secrets` on wslc &lt; 3.0.3.0 | Skipped |
+| Multi-network, `--ip`, `--ip-range` on wslc &lt; 3.0.3.0 | Only the highest-priority network is attached, without a static address |
+| Endpoint `mac_address`, `gw_priority`, `interface_name` | Ignored |
+| Host port ranges in host-gateway DNAT | Skipped (the published port is chosen at run time and is not a stable DNAT target) |
+
 **⚠️ Ignored with a warning** (errors under `--strict`)
 
 `restart`, `deploy.restart_policy`, `privileged`, `cap_add`/`cap_drop`, `devices`, `device_cgroup_rules`,
-`security_opt`, `sysctls`, `extra_hosts`, `secrets`, `configs`, `logging`, `platform`, `init`, `read_only`,
+`security_opt`, `sysctls`, `logging`, `platform`, `init`, `read_only`,
 `ipc`, `pid`, `uts`, `userns_mode`, `group_add`, `cgroup`/`cgroup_parent`, `runtime`, `isolation`, `mac_address`,
 `links`/`external_links`, `volumes_from`, `storage_opt`, `oom_*`, `pids_limit`, `blkio_config`,
 `cpu_shares`/`cpu_quota`/`cpuset` etc., `mem_reservation`/`memswap_limit`, `post_start`/`pre_stop`, `develop` (watch),
 `provider`, `models`, `use_api_socket`, `network_mode: host|service:|container:`,
-multiple networks (only the highest-priority one is joined), static `ipv4_address`, volume `nocopy`/`subpath`,
-npipe/image/cluster volume types,
-`build.secrets/ssh/platforms/cache_from/cache_to/additional_contexts/network/extra_hosts/dockerfile_inline`,
-`healthcheck.start_interval`, non-bridge network drivers, IPv6, volume drivers and options,
+volume `nocopy`/`subpath`, npipe/image/cluster volume types,
+`build.ssh`/`platforms`/`cache_from`/`cache_to`/`additional_contexts`/`network`/`extra_hosts`/`dockerfile_inline`,
+`healthcheck.start_interval`, non-bridge network drivers, volume drivers and options,
 `deploy.resources.reservations` (memory).
+
+wslc's container `run` argument list has no flags for capabilities, devices, sysctls, a log driver, `--init`,
+`--privileged` or `--read-only` (tracked upstream, for example [WSL#41181](https://github.com/microsoft/WSL/issues/41181)).
+Those fields stay warnings rather than guesses.
 
 **❌ Unsupported commands**: `watch`, `attach`, `cp`, `top`, `pause`/`unpause`, `port`, `events`, `images`,
 `scale` (use `up --scale`), `kill`, `rm`, `create`, `push`, `ls` (multi-project).
@@ -278,8 +333,12 @@ See [`testdata/golden/`](testdata/golden); `up_full.golden` covers nearly every 
 ## Design notes
 
 - **Project state = container labels.** Each container carries `com.docker.compose.project/service/container-number/oneoff/
-  project.working_dir/project.config_files` plus `com.wslc.compose.config-hash` and `com.wslc.compose.version`.
+  project.working_dir/project.config_files` plus `com.wslc.compose.config-hash`, `com.wslc.compose.version` and,
+  when the service uses `host-gateway`, `com.wslc.compose.host-gateway=v1`.
   `ps`/`down` rely only on `wslc list --filter label=...`, falling back to per-container `inspect` if labels are missing.
+  The exception is generated secret/config files (`environment:` and `content:`), which live under
+  `$XDG_CONFIG_HOME/wslc-compose/<project>` (or `%AppData%\wslc-compose\<project>` on Windows) and are deleted by `down`.
+  `file:` sources are mounted in place and are not copied.
 - **Config hash.** JSON + SHA-256 of the service config, excluding `build`, `pull_policy`, `scale`/`replicas`,
   `depends_on` and `profiles`, so changing replica counts or dependencies does not recreate containers;
   services rebuilt by `up --build` are always recreated. Inspect with `wslc-compose config --hash "*"`.
@@ -303,9 +362,15 @@ Package layout: [docs/architecture.md](docs/architecture.md).
 
 ## Known limitations
 
-- wslc lacks key Compose capabilities: restart policies, `--privileged`, `--cap-add`, `--device`, `--platform`,
-  `--network host`, secrets/configs. These fields are ignored with a warning.
-- **One network per container** (wslc run accepts a single `--network`); multi-network services need a different topology.
+- wslc lacks key Compose capabilities: restart policies, `--privileged`, `--cap-add`, `--device`, `--sysctl`,
+  `--platform`, `--network host`, log drivers, `--init`. These fields are ignored with a warning.
+- **Several networks** need wslc 3.0.3.0 (`create`, `network connect`, `start`). Older builds attach only the
+  highest-priority network and warn. `wslc run` still accepts a single `--network`, which is why secondary
+  endpoints are connected before `start`. That ordering is taken from the reference frontend and has not been
+  re-checked on a live wslc in this repository.
+- **host-gateway published ports** need `wslc system session run` plus iptables inside the session VM (wslc 3.0.3.0).
+  The chain names (`WCGP_`/`WCGS_`/`WCGF_` plus a project hash) match bacarndiaye/wslc-compose so the two tools
+  can reconcile one project. `/etc/hosts` is updated after start on every wslc that can `exec`.
 - `wslc inspect` output is OCI-style rather than Docker-style and is parsed tolerantly; if your wslc version
   renames fields, `ps` status/ports or `service_healthy` waits may degrade (with a warning).
 - Paths inside a WSL distro (not under `/mnt/<drive>`) become `//wsl.localhost/...` UNC paths, whose acceptance
@@ -393,7 +458,10 @@ wslc compose up -d        # PowerShell 语法糖，等价
 
 > 状态：预览（v0.1）。单元/golden 测试覆盖全部 wslc 交互（mock Runner）；并已在 Windows 11 +
 > **wslc 3.0.1** 真机上回归 `up`/`up -d`/`down -v`/`ps`/`logs`/`exec`/`run`/`build`/`pull`/`--scale`、
-> 健康检查等待、匿名卷与 **GPU（RTX 5060 Ti，CUDA）**。遇到差异欢迎附 `--dry-run` 输出提 issue。
+> 健康检查等待、匿名卷与 **GPU（RTX 5060 Ti，CUDA）**。
+> 多网络接入、静态 IPv4、`ip_range`、secrets/configs、`build --secret`、`extra_hosts` 与 host-gateway
+> 会话规则目前只由 mock Runner 和 golden 文件覆盖，需要在 **wslc 3.0.3.0**（或更新）的真机上才能算验证过。
+> 遇到差异欢迎附 `--dry-run` 输出提 issue。
 
 ---
 
@@ -588,8 +656,11 @@ wslc-compose down -v
 | `environment`、`env_file` | `-e K=V`（env_file 由 compose-go 合并，按键排序） |
 | `ports`（含 host_ip、范围展开、udp） | `-p [ip:]host:container[/udp]` |
 | `volumes` bind / 命名卷 / 匿名卷 / tmpfs（含 size）、`tmpfs`、`read_only` 挂载 | `-v` / `--tmpfs`，bind 源路径转换为 Windows 正斜杠形式。wslc 不接受裸路径，匿名卷（`- /data`）自动改写为项目内命名卷 `<project>_<service>_<path>_anon`（重建容器时数据保留，`down -v` 删除） |
-| `networks`（含默认网络 `<project>_default`、`aliases`）、`network_mode: none` | `--network` + `--network-alias <service>` + aliases |
-| 顶层 `networks`：`driver`、`internal`、`ipam.config[0].subnet/gateway`、`driver_opts`、`labels`、`external`、`name` | `wslc network create …` |
+| `networks`（默认网络 `<project>_default`、`aliases`、`priority`、`ipv4_address`）、`network_mode: none` | 单网络：`run --network --ip --network-alias`。多网络：在优先级最高的网络上 `create`，对其余网络 `network connect`（`--ip`、`--network-alias`、`--link-local-ip`、`--driver-opt`），再 `start` |
+| 顶层 `networks`：`driver`、`internal`、`ipam.config[0].subnet/gateway/ip_range`、`driver_opts`、`labels`、`external`、`name` | `wslc network create --subnet --gateway --ip-range -o …`（除非 `external` 或 `name:`，否则名称加项目前缀） |
+| `secrets` / `configs`（`file`、`environment`、`content`、`target`；长短语法） | 只读 `-v`，路径为 `/run/secrets/<name>` 或 `/<name>`（或 `target`）。`environment` / `content` 写到项目状态目录，`down` 时删除 |
+| `build.secrets` | wslc 为 3.0.3.0 或更新时：`wslc build --secret id=<target\|source>,src=<path>` |
+| `extra_hosts`，含 `host-gateway` | 启动后用 `wslc exec -u 0` 重写带标记的 `/etc/hosts` 行。`host-gateway` 取容器默认网关。已发布端口的回环（DNAT/MASQUERADE）在 wslc 3.0.3.0+ 上通过 `wslc system session run` 安装，`down` 时删除 |
 | 顶层 `volumes`：`name`、`external`、`labels` | `wslc volume create -l com.docker.compose.project=… -l com.docker.compose.volume=…` |
 | `working_dir`、`user`、`hostname`、`domainname`、`labels` | `-w` `-u` `-h` `--domainname` `-l` |
 | `dns`、`dns_search`、`dns_opt` | `--dns` `--dns-search` `--dns-option` |
@@ -609,17 +680,39 @@ wslc-compose down -v
 | `depends_on: service_healthy` | 轮询 `wslc inspect` 的 `State.Health.Status`；若 wslc 不上报健康状态，连续 3 次后退化为“运行即视为健康”并给出警告 |
 | `ports[].mode: host` | 按普通端口发布处理（INFO 提示，不触发 `--strict`） |
 
+组合示例（多网络、生成的 secret、host-gateway）见上方英文矩阵中的 Example。
+
+**部分支持**（已实现；wslc 无法完全对齐的地方会警告，`--strict` 时这些警告变为错误）
+
+| 字段 | 行为 |
+|---|---|
+| secrets/configs 的 `uid`/`gid` | 绑定挂载无法设置属主；文件仍会挂上 |
+| `file:` 来源上的 `mode` | 保留宿主文件权限。`environment`/`content` 生成的文件会按 `mode` chmod |
+| `external: true` 的 secret/config | 跳过挂载 |
+| `ipv6_address`、`enable_ipv6` | wslc 网络只有 IPv4 |
+| 主端点的 `driver_opts` / `link_local_ips` | `wslc run` 没有对应参数；只在 `network connect` 接入该网络时生效 |
+| 第二条及以后的 `ipam.config`、`aux_addresses`、自定义 IPAM | 只用第一条的 subnet/gateway/`ip_range` |
+| `extra_hosts` | 在启动之后写入，入口进程可能已经读过 `/etc/hosts`（INFO，不触发 `--strict`） |
+| wslc &lt; 3.0.3.0 上的 host-gateway 端口回环 | 仍更新 `/etc/hosts`；跳过会话里的 DNAT |
+| wslc &lt; 3.0.3.0 上的 `build.secrets` | 跳过 |
+| wslc &lt; 3.0.3.0 上的多网络、`--ip`、`--ip-range` | 只接入优先级最高的网络，且不设静态地址 |
+| 端点 `mac_address`、`gw_priority`、`interface_name` | 忽略 |
+| host-gateway DNAT 里的主机端口范围 | 跳过（发布端口在运行时才选定，不是稳定的 DNAT 目标） |
+
 **⚠️ 忽略并警告**（`--strict` 时报错）
 
 `restart`、`deploy.restart_policy`、`privileged`、`cap_add`/`cap_drop`、`devices`、`device_cgroup_rules`、
-`security_opt`、`sysctls`、`extra_hosts`、`secrets`、`configs`、`logging`、`platform`、`init`、`read_only`、
+`security_opt`、`sysctls`、`logging`、`platform`、`init`、`read_only`、
 `ipc`、`pid`、`uts`、`userns_mode`、`group_add`、`cgroup`/`cgroup_parent`、`runtime`、`isolation`、`mac_address`、
 `links`/`external_links`、`volumes_from`、`storage_opt`、`oom_*`、`pids_limit`、`blkio_config`、
 `cpu_shares`/`cpu_quota`/`cpuset` 等、`mem_reservation`/`memswap_limit`、`post_start`/`pre_stop`、`develop`(watch)、
 `provider`、`models`、`use_api_socket`、`network_mode: host|service:|container:`、
-多网络（只接入优先级最高的一个）、静态 `ipv4_address`、卷 `nocopy`/`subpath`、npipe/image/cluster 卷类型、
-`build.secrets/ssh/platforms/cache_from/cache_to/additional_contexts/network/extra_hosts/dockerfile_inline`、
-`healthcheck.start_interval`、非 bridge 网络驱动、IPv6、卷驱动及选项、`deploy.resources.reservations`（内存）。
+卷 `nocopy`/`subpath`、npipe/image/cluster 卷类型、
+`build.ssh`/`platforms`/`cache_from`/`cache_to`/`additional_contexts`/`network`/`extra_hosts`/`dockerfile_inline`、
+`healthcheck.start_interval`、非 bridge 网络驱动、卷驱动及选项、`deploy.resources.reservations`（内存）。
+
+wslc 的 `run` 参数表里没有 capabilities、设备、sysctl、日志驱动、`--init`、`--privileged` 或 `--read-only`
+（上游仍在跟踪，例如 [WSL#41181](https://github.com/microsoft/WSL/issues/41181)）。这些字段保持警告，而不是猜测一个参数。
 
 **❌ 不支持的命令**：`watch`、`attach`、`cp`、`top`、`pause`/`unpause`、`port`、`events`、`images`、`scale`（请用 `up --scale`）、`kill`、`rm`、`create`、`push`、`ls`（多项目）。
 
@@ -642,8 +735,12 @@ wslc.exe network remove minimal_default
 ## 设计要点
 
 - **项目状态 = 容器标签。** 每个容器带有 `com.docker.compose.project/service/container-number/oneoff/
-  project.working_dir/project.config_files` 以及 `com.wslc.compose.config-hash`、`com.wslc.compose.version`。
+  project.working_dir/project.config_files` 以及 `com.wslc.compose.config-hash`、`com.wslc.compose.version`；
+  使用了 `host-gateway` 时还有 `com.wslc.compose.host-gateway=v1`。
   `ps`/`down` 只依赖 `wslc list --filter label=...`；若 list 输出缺少标签，则逐个 `inspect` 补全。
+  例外是 `environment:` / `content:` 生成的 secret 和 config 文件，放在
+  `$XDG_CONFIG_HOME/wslc-compose/<project>`（Windows 上为 `%AppData%\wslc-compose\<project>`），由 `down` 删除。
+  `file:` 来源按原路径挂载，不复制。
 - **配置哈希。** 对服务配置做 JSON + SHA-256，排除 `build`、`pull_policy`、`scale`/`replicas`、`depends_on`、
   `profiles`，避免只调整副本数或依赖时重建容器；`up --build` 重新构建过的服务会强制重建。
   `wslc-compose config --hash "*"` 可查看。
@@ -666,9 +763,14 @@ wslc.exe network remove minimal_default
 
 ## 已知限制
 
-- wslc 对 Compose 关键能力缺失：没有重启策略、`--privileged`、`--cap-add`、`--device`、`--platform`、
-  `--network host`、secrets/configs，这些字段只能警告忽略。
-- **每个容器只能接入一个网络**（wslc run 只接受一个 `--network`），跨多个网络的服务需要调整拓扑。
+- wslc 对 Compose 关键能力缺失：没有重启策略、`--privileged`、`--cap-add`、`--device`、`--sysctl`、
+  `--platform`、`--network host`、日志驱动、`--init`，这些字段只能警告忽略。
+- **多个网络**需要 wslc 3.0.3.0（`create`、`network connect`、`start`）。更旧的版本只接入优先级最高的网络并给出警告。
+  `wslc run` 仍然只接受一个 `--network`，所以其余端点在 `start` 之前用 `network connect` 接上。这个顺序来自参考实现，
+  本仓库没有在真机 wslc 上重新验证。
+- **host-gateway 的已发布端口**需要 `wslc system session run` 以及会话虚拟机里的 iptables（wslc 3.0.3.0）。
+  链名（`WCGP_`/`WCGS_`/`WCGF_` 加项目哈希）与 bacarndiaye/wslc-compose 对齐，这样两个前端可以调和同一个项目。
+  凡是能 `exec` 的 wslc 都会在启动后更新 `/etc/hosts`。
 - `wslc inspect` 输出遵循 OCI 风格而非 Docker 模式，解析采用多路径容错；若你的 wslc 版本字段名不同，
   `ps` 的状态/端口列或 `service_healthy` 等待可能退化（会有警告）。
 - WSL 发行版内部路径（非 `/mnt/<盘符>`）会变成 `//wsl.localhost/...` UNC 形式，wslc 是否接受取决于版本；
