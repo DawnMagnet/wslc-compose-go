@@ -28,11 +28,12 @@ profiles, env_file and extends are all handled upstream), then translates every 
 > Status: preview (v0.2). Unit and golden tests cover every wslc interaction (mocked Runner). Verified on
 > Windows 11 + **wslc 3.0.1**: `up`/`up -d`/`down -v`/`ps`/`logs`/`exec`/`run`/`build`/`pull`/`--scale`,
 > healthcheck waits, anonymous volumes and **GPU (RTX 5060 Ti, CUDA)**.
-> On Windows with **wslc 3.0.3.0**, repeated `up`/`down` with `host-gateway` and a published port exit 0,
-> `localhost` and `host.docker.internal` are reachable, the WCG iptables chains are empty after `down`,
-> and an `up` that fails on a port conflict rolls back with no chains left.
-> Multi-network attach, static IPv4, `ip_range` and `build --secret` are covered by the mocked Runner and
-> golden files only.
+> On Windows with **wslc 3.0.3.0**: multiple networks and aliases, static IPv4, `ip_range`, secrets (file and
+> environment), configs, `extra_hosts` and `host-gateway` (including DNAT to a published port), and idempotent
+> `up`. Repeated `up`/`down` with `host-gateway` and a published port exit 0, `localhost` and
+> `host.docker.internal` are reachable, the WCG iptables chains are empty after `down`, and an `up` that fails
+> on a port conflict rolls back with no chains left.
+> `build --secret` is covered by the mocked Runner and golden files only.
 > Please attach `--dry-run` output to issues.
 
 ## Contents
@@ -467,10 +468,11 @@ wslc compose up -d        # PowerShell 语法糖，等价
 > 状态：预览（v0.2）。单元/golden 测试覆盖全部 wslc 交互（mock Runner）；并已在 Windows 11 +
 > **wslc 3.0.1** 真机上回归 `up`/`up -d`/`down -v`/`ps`/`logs`/`exec`/`run`/`build`/`pull`/`--scale`、
 > 健康检查等待、匿名卷与 **GPU（RTX 5060 Ti，CUDA）**。
-> 在 Windows + **wslc 3.0.3.0** 上，带 `host-gateway` 和已发布端口的 `up`/`down` 反复执行退出码为 0，
-> `localhost` 与 `host.docker.internal` 可达，`down` 之后 WCG iptables 链为空，端口冲突导致失败的 `up`
-> 会回滚且不留下链。
-> 多网络接入、静态 IPv4、`ip_range` 与 `build --secret` 目前仍只由 mock Runner 和 golden 文件覆盖。
+> 在 Windows + **wslc 3.0.3.0** 上已验证：多网络与别名、静态 IPv4、`ip_range`、secrets（file 与 environment）、
+> configs、`extra_hosts` 与 `host-gateway`（含已发布端口的 DNAT），以及幂等的 `up`。带 `host-gateway` 和已发布端口的
+> `up`/`down` 反复执行退出码为 0，`localhost` 与 `host.docker.internal` 可达，`down` 之后 WCG iptables 链为空，
+> 端口冲突导致失败的 `up` 会回滚且不留下链。
+> `build --secret` 目前仍只由 mock Runner 和 golden 文件覆盖。
 > 遇到差异欢迎附 `--dry-run` 输出提 issue。
 
 ---
