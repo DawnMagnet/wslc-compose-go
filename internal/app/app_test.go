@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -93,6 +94,13 @@ func TestUpSecretsGolden(t *testing.T) {
 		t.Fatalf("secret bytes leaked onto the command line:\n%s", m)
 	}
 	golden.Assert(t, "up_secrets.golden", m)
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("second up without down: %v\n%s", err, h.stderr.String())
+	}
+	bodyAgain, err := os.ReadFile(filepath.Join(h.app.o.StateDir, "sec", "secrets", "api_key"))
+	if err != nil || string(bodyAgain) != "s3cret-value" {
+		t.Fatalf("secret after second up: %q %v", bodyAgain, err)
+	}
 	if !strings.Contains(h.stderr.String(), "external secret") {
 		t.Fatalf("external secret warning missing:\n%s", h.stderr.String())
 	}
@@ -129,6 +137,9 @@ func TestUpSecretsGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	golden.Assert(t, "dryrun_secrets.golden", hashRE.ReplaceAllString(dry.stdout.String(), "config-hash=<hash>"))
+	if _, err := os.Stat(filepath.Join(dry.app.o.StateDir, "sec")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run must not write the state dir: %v", err)
+	}
 }
 
 func TestUpHostsGolden(t *testing.T) {
@@ -190,6 +201,132 @@ func TestUpHostsGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	golden.Assert(t, "dryrun_hosts.golden", hashRE.ReplaceAllString(dry.stdout.String(), "config-hash=<hash>"))
+}
+
+func TestLegacy301Goldens(t *testing.T) {
+	h := newHarness(t, "minimal.yaml", nil)
+	h.fake.version = "wslc version 3.0.1.0"
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("up minimal: %v\n%s", err, h.stderr.String())
+	}
+	golden.Assert(t, "legacy301_up_minimal.golden", h.fake.mutations())
+
+	h = newHarness(t, "full.yaml", nil)
+	h.fake.version = "wslc version 3.0.1.0"
+	h.fake.health["full-api-1"] = []string{"starting", "healthy"}
+	h.fake.health["full-api-2"] = []string{"healthy"}
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1, WaitTimeout: 5 * time.Second}); err != nil {
+		t.Fatalf("up full: %v\n%s", err, h.stderr.String())
+	}
+	golden.Assert(t, "legacy301_up_full.golden", h.fake.mutations())
+
+	h = newHarness(t, "full.yaml", nil)
+	h.fake.version = "wslc version 3.0.1.0"
+	h.fake.networks = []string{"full_front", "full_back", "unrelated"}
+	h.fake.volumes = []string{"full_cache", "shared-dbdata"}
+	h.fake.containers = append(h.fake.containers,
+		container("full", "db", 1, "h", true),
+		container("full", "web", 1, "h", true),
+		container("full", "api", 2, "h", false),
+		container("full", "api", 1, "h", true),
+		container("full", "legacy", 1, "h", true),
+	)
+	if err := h.app.Down(ctx, DownOptions{Volumes: true, Timeout: 2}); err != nil {
+		t.Fatal(err)
+	}
+	golden.Assert(t, "legacy301_down_full.golden", h.fake.mutations())
+}
+
+func TestDownNetworksSecretsHosts(t *testing.T) {
+	h := newHarness(t, "networks.yaml", nil)
+	h.fake.networks = []string{"nets_back", "nets_front", "already"}
+	if err := h.app.Down(ctx, DownOptions{Timeout: 2}); err != nil {
+		t.Fatal(err)
+	}
+	m := h.fake.mutations()
+	if strings.Contains(m, "already") {
+		t.Fatalf("external network removed:\n%s", m)
+	}
+	golden.Assert(t, "down_networks.golden", m)
+
+	h = newHarness(t, "secrets.yaml", func(o *Options) {
+		o.Env = []string{"API_KEY=s3cret-value"}
+	})
+	dir := filepath.Join(h.app.o.StateDir, "sec", "secrets")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "api_key"), []byte("s3cret-value"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	h.fake.networks = []string{"sec_default"}
+	h.fake.containers = append(h.fake.containers, container("sec", "app", 1, "h", true))
+	if err := h.app.Down(ctx, DownOptions{Timeout: 2}); err != nil {
+		t.Fatal(err)
+	}
+	golden.Assert(t, "down_secrets.golden", h.fake.mutations())
+	if _, err := os.Stat(filepath.Join(h.app.o.StateDir, "sec")); !os.IsNotExist(err) {
+		t.Fatalf("down left state dir: %v", err)
+	}
+
+	h = newHarness(t, "hosts.yaml", nil)
+	h.fake.networks = []string{"hosts_default"}
+	h.fake.containers = append(h.fake.containers, container("hosts", "web", 1, "h", true))
+	if err := h.app.Down(ctx, DownOptions{Timeout: 2}); err != nil {
+		t.Fatal(err)
+	}
+	golden.Assert(t, "down_hosts.golden", h.fake.mutations())
+
+	h = newHarness(t, "hosts.yaml", nil)
+	h.fake.failSession = true
+	h.fake.networks = []string{"hosts_default"}
+	err := h.app.Down(ctx, DownOptions{Timeout: 2})
+	if err == nil || !strings.Contains(err.Error(), "iptables") {
+		t.Fatalf("gateway failure must surface: %v", err)
+	}
+	if !strings.Contains(h.fake.mutations(), "network remove hosts_default") {
+		t.Fatalf("down must still remove networks:\n%s", h.fake.mutations())
+	}
+}
+
+func TestRunMultiNetwork(t *testing.T) {
+	h := newHarness(t, "networks.yaml", nil)
+	h.fake.networks = []string{"already", "nets_back", "nets_front"}
+	h.fake.images["alpine"] = true
+	if err := h.app.Run(ctx, RunOptions{Service: "app", Detach: true, NoDeps: true, Name: "oneoff", NoTTY: true}); err != nil {
+		t.Fatalf("run: %v\n%s", err, h.stderr.String())
+	}
+	m := h.fake.mutations()
+	if strings.Contains(m, "\nwslc run ") || strings.HasPrefix(m, "wslc run ") {
+		t.Fatalf("detached multi-network run must create, connect, then start:\n%s", m)
+	}
+	golden.Assert(t, "run_multinet.golden", m)
+}
+
+func TestUpRollbackRemovesNewState(t *testing.T) {
+	h := newHarness(t, "secrets.yaml", func(o *Options) {
+		o.Env = []string{"API_KEY=s3cret-value"}
+	})
+	h.fake.failRun = "sec-app-1"
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err == nil {
+		t.Fatal("up must fail")
+	}
+	if _, err := os.Stat(filepath.Join(h.app.o.StateDir, "sec")); !os.IsNotExist(err) {
+		t.Fatalf("rollback left state dir: %v", err)
+	}
+}
+
+func TestDefaultStateRoot(t *testing.T) {
+	root, err := defaultStateRoot()
+	if err != nil || root == "" {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		local := os.Getenv("LOCALAPPDATA")
+		if local != "" && !strings.HasPrefix(strings.ToLower(root), strings.ToLower(local)) {
+			t.Fatalf("state root %s is not under LocalAppData %s", root, local)
+		}
+	}
 }
 
 func TestUpIsIdempotent(t *testing.T) {

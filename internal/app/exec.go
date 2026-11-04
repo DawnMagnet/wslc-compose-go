@@ -104,7 +104,7 @@ func (a *App) Run(ctx context.Context, o RunOptions) error {
 	if err != nil {
 		return err
 	}
-	tr, err := a.prepareTranslator(p)
+	tr, err := a.prepareTranslator(p, nil)
 	if err != nil {
 		return err
 	}
@@ -123,7 +123,7 @@ func (a *App) Run(ctx context.Context, o RunOptions) error {
 	if err := translate.ValidateServiceNetworks(p); err != nil {
 		return err
 	}
-	hash, err := project.ServiceHash(s)
+	hash, err := project.ServiceHash(s, a.eng.Tier())
 	if err != nil {
 		return err
 	}

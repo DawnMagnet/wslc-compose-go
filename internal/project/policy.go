@@ -120,6 +120,16 @@ type Engine struct {
 	HostGateway    bool // system session run + iptables for host-gateway
 }
 
+// Tier is the capability generation mixed into config hashes. Containers
+// created for "legacy" (wslc before 3.0.3.0) are recreated once the binary
+// can attach every network and pass static addresses.
+func (e Engine) Tier() string {
+	if e.MultiNetwork && e.StaticIPv4 && e.IPRange && e.EndpointExtras {
+		return "3.0.3"
+	}
+	return "legacy"
+}
+
 // LatestEngine is a current wslc (3.0.3.0 feature floors).
 func LatestEngine() Engine {
 	return Engine{MultiNetwork: true, StaticIPv4: true, IPRange: true, EndpointExtras: true, BuildSecret: true, HostGateway: true}

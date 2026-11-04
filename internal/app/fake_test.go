@@ -22,19 +22,20 @@ import (
 
 // fakeWSLC emulates just enough of the wslc CLI for orchestration tests.
 type fakeWSLC struct {
-	mu         sync.Mutex
-	calls      []string
-	containers []map[string]any
-	networks   []string
-	volumes    []string
-	images     map[string]bool
-	health     map[string][]string // per-container sequence of health states
-	logs       map[string]string
-	exited     map[string]int            // containers that report exited with this code
-	failRun    string                    // `run` of this container name fails
-	version    string                    // `wslc --version` text; empty means 3.0.3.0
-	runtime    map[string]map[string]any // extra inspect fields keyed by container name
-	track      bool                      // record containers created by run/create
+	mu          sync.Mutex
+	calls       []string
+	containers  []map[string]any
+	networks    []string
+	volumes     []string
+	images      map[string]bool
+	health      map[string][]string // per-container sequence of health states
+	logs        map[string]string
+	exited      map[string]int            // containers that report exited with this code
+	failRun     string                    // `run` of this container name fails
+	failSession bool                      // `system session run` fails
+	version     string                    // `wslc --version` text; empty means 3.0.3.0
+	runtime     map[string]map[string]any // extra inspect fields keyed by container name
+	track       bool                      // record containers created by run/create
 }
 
 func (f *fakeWSLC) Run(ctx context.Context, args []string, stdio wslc.IO) error {
@@ -108,6 +109,9 @@ func (f *fakeWSLC) Run(ctx context.Context, args []string, stdio wslc.IO) error 
 	}
 	if f.track && (args[0] == "run" || args[0] == "create") {
 		f.remember(args)
+	}
+	if f.failSession && len(args) >= 2 && args[0] == "system" && args[1] == "session" {
+		return errors.New("iptables failed")
 	}
 	return nil
 }

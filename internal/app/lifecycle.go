@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -59,15 +60,20 @@ func (a *App) Down(ctx context.Context, o DownOptions) error {
 			return err
 		}
 	}
+	var errs []error
 	if gateway {
 		if err := a.reconcileGateway(ctx, p, true); err != nil {
-			return err
+			a.infof("WARN host-gateway cleanup: %v", err)
+			errs = append(errs, err)
 		}
 	}
 	if err := a.removeResources(ctx, p, o.Volumes); err != nil {
-		return err
+		errs = append(errs, err)
 	}
-	return a.removeState(p.Name)
+	if err := a.removeState(p.Name); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 func (a *App) removeState(project string) error {
@@ -77,6 +83,7 @@ func (a *App) removeState(project string) error {
 	}
 	if err := state.Remove(dir); err != nil {
 		a.infof("WARN could not remove generated secrets/configs in %s: %v", dir, err)
+		return err
 	}
 	return nil
 }

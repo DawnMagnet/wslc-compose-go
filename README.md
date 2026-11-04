@@ -337,9 +337,9 @@ See [`testdata/golden/`](testdata/golden); `up_full.golden` covers nearly every 
   when the service uses `host-gateway`, `com.wslc.compose.host-gateway=v1`.
   `ps`/`down` rely only on `wslc list --filter label=...`, falling back to per-container `inspect` if labels are missing.
   The exception is generated secret/config files (`environment:` and `content:`), which live under
-  `$XDG_CONFIG_HOME/wslc-compose/<project>` (or `%AppData%\wslc-compose\<project>` on Windows) and are deleted by `down`.
+  `$XDG_CONFIG_HOME/wslc-compose/<project>` (or `%LOCALAPPDATA%\wslc-compose\<project>` on Windows) and are deleted by `down`.
   `file:` sources are mounted in place and are not copied.
-- **Config hash.** JSON + SHA-256 of the service config, excluding `build`, `pull_policy`, `scale`/`replicas`,
+- **Config hash.** JSON + SHA-256 of a document that includes a translation schema version, the wslc capability tier (`3.0.3` or `legacy`), and the service config, excluding `build`, `pull_policy`, `scale`/`replicas`,
   `depends_on` and `profiles`, so changing replica counts or dependencies does not recreate containers;
   services rebuilt by `up --build` are always recreated. Inspect with `wslc-compose config --hash "*"`.
 - **Default DNS 1.1.1.1.** The wslc utility VM forwards DNS to the Windows host resolver; on many LAN/corporate
@@ -739,9 +739,9 @@ wslc.exe network remove minimal_default
   使用了 `host-gateway` 时还有 `com.wslc.compose.host-gateway=v1`。
   `ps`/`down` 只依赖 `wslc list --filter label=...`；若 list 输出缺少标签，则逐个 `inspect` 补全。
   例外是 `environment:` / `content:` 生成的 secret 和 config 文件，放在
-  `$XDG_CONFIG_HOME/wslc-compose/<project>`（Windows 上为 `%AppData%\wslc-compose\<project>`），由 `down` 删除。
+  `$XDG_CONFIG_HOME/wslc-compose/<project>`（Windows 上为 `%LOCALAPPDATA%\wslc-compose\<project>`），由 `down` 删除。
   `file:` 来源按原路径挂载，不复制。
-- **配置哈希。** 对服务配置做 JSON + SHA-256，排除 `build`、`pull_policy`、`scale`/`replicas`、`depends_on`、
+- **配置哈希。** 对「翻译模式版本 + wslc 能力档（`3.0.3` 或 `legacy`）+ 服务配置」做 JSON + SHA-256，排除 `build`、`pull_policy`、`scale`/`replicas`、`depends_on`、
   `profiles`，避免只调整副本数或依赖时重建容器；`up --build` 重新构建过的服务会强制重建。
   `wslc-compose config --hash "*"` 可查看。
 - **默认 DNS 1.1.1.1。** wslc 的工具 VM 把 DNS 转发到 Windows 主机解析器；在很多局域网/企业网络里，

@@ -10,6 +10,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -161,7 +162,7 @@ func (a *App) projectState(project string) (string, error) {
 	root := a.o.StateDir
 	if root == "" {
 		var err error
-		root, err = os.UserConfigDir()
+		root, err = defaultStateRoot()
 		if err != nil {
 			root = os.TempDir()
 		}
@@ -179,15 +180,30 @@ func (a *App) projectState(project string) (string, error) {
 	return filepath.Join(root, project), nil
 }
 
+// defaultStateRoot is %LOCALAPPDATA% on Windows (not Roaming AppData) and
+// the user config directory everywhere else.
+func defaultStateRoot() (string, error) {
+	if runtime.GOOS == "windows" {
+		return os.UserCacheDir()
+	}
+	return os.UserConfigDir()
+}
+
 // prepareTranslator resolves secret and config files, then returns the
-// translator that mounts them.
-func (a *App) prepareTranslator(p *types.Project) (*translate.Translator, error) {
+// translator that mounts them. Dry-run computes the mount paths and does
+// not write secret bytes. rb, when non-nil, records a new state directory
+// so a failed up deletes it.
+func (a *App) prepareTranslator(p *types.Project, rb *rollback) (*translate.Translator, error) {
 	t := a.translator(p)
 	dir, err := a.projectState(p.Name)
 	if err != nil {
 		return nil, err
 	}
-	prep, err := state.Prepare(dir, p)
+	write := !a.c.DryRun()
+	prep, created, err := state.Prepare(dir, p, write)
+	if created && rb != nil {
+		rb.add("State", dir, func(context.Context, string) error { return state.Remove(dir) })
+	}
 	if err != nil {
 		return nil, err
 	}

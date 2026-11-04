@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Fixed
+
+- Generated secret and config files are replaced atomically, so a second `up`
+  (or two services sharing one source) can rewrite a read-only file. `--dry-run`
+  computes those paths and does not write them. On Windows the project state
+  directory is under `%LOCALAPPDATA%`, and file modes are not asserted as Unix
+  bits. A failed `up` removes a state directory it created. `down` still
+  removes networks and that directory when host-gateway cleanup fails.
+- Config hashes include a translation schema version and the wslc capability
+  tier, so containers created by v0.1.5 or by an older wslc are recreated
+  after an upgrade. wslc 3.0.1 command sequences for `up`/`down` of the
+  minimal and full examples stay byte-identical to v0.1.5.
+
 ### Added
 
 - Multiple networks per service. Every declared network is created (project-prefixed

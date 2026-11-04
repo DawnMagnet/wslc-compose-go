@@ -23,40 +23,46 @@ const (
 	VerBuildSecret = "3.0.3.0"
 )
 
-var versionRE = regexp.MustCompile(`\d+(?:\.\d+){1,3}`)
+// wslcVersionRE matches wslc's own version, not the first dotted number in
+// the output (WSL's version and the Go toolchain version often appear too).
+// A pre-release suffix is captured separately and compares below the release.
+var wslcVersionRE = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_])wslc(?:\.exe)?(?:[ \t]+version)?[ \t]+v?(\d+(?:\.\d+){1,3})(?:-([0-9A-Za-z.]+))?`)
 
 // Capabilities is what a probed wslc binary can be asked to do.
 type Capabilities struct {
 	Raw   string // version text, empty when probing failed
-	Known bool   // Raw contained a parseable version
+	Known bool   // Raw contained a parseable wslc version
 	parts []int
+	pre   string // pre-release identifier; empty for a release
 
 	// Assumed is set when no binary could be probed and the caller opted
 	// into planning as if a current wslc were present (dry-run).
 	Assumed bool
 }
 
-// ParseCapabilities extracts a dotted version from `wslc --version` output.
+// ParseCapabilities extracts the wslc version from `wslc --version` output.
+// A bare semver with no wslc token is ignored. A pre-release such as
+// 3.0.3.0-rc1 is known but compares below 3.0.3.0.
 func ParseCapabilities(raw string) Capabilities {
-	m := versionRE.FindString(raw)
-	if m == "" {
+	m := wslcVersionRE.FindStringSubmatch(raw)
+	if m == nil {
 		return Capabilities{Raw: strings.TrimSpace(raw)}
 	}
 	var parts []int
-	for _, f := range strings.Split(m, ".") {
+	for _, f := range strings.Split(m[1], ".") {
 		n, err := strconv.Atoi(f)
 		if err != nil {
 			return Capabilities{Raw: strings.TrimSpace(raw)}
 		}
 		parts = append(parts, n)
 	}
-	return Capabilities{Raw: strings.TrimSpace(raw), Known: true, parts: parts}
+	return Capabilities{Raw: strings.TrimSpace(raw), Known: true, parts: parts, pre: m[2]}
 }
 
 // AssumeCurrent plans every gated feature. Used when --dry-run cannot see a
 // wslc binary and the preview should still show the full command sequence.
 func AssumeCurrent() Capabilities {
-	c := ParseCapabilities(VerHostGateway)
+	c := ParseCapabilities("wslc version " + VerHostGateway)
 	c.Raw = ""
 	c.Assumed = true
 	return c
@@ -71,7 +77,7 @@ func (c Capabilities) AtLeast(dotted string) bool {
 	if !c.Known {
 		return false
 	}
-	want := ParseCapabilities(dotted)
+	want := ParseCapabilities("wslc version " + dotted)
 	if !want.Known {
 		return false
 	}
@@ -87,6 +93,16 @@ func (c Capabilities) AtLeast(dotted string) bool {
 		if a != b {
 			return a > b
 		}
+	}
+	// Equal numbers: a pre-release is older than the release itself.
+	if c.pre != "" && want.pre == "" {
+		return false
+	}
+	if c.pre == "" && want.pre != "" {
+		return true
+	}
+	if c.pre != want.pre {
+		return c.pre > want.pre
 	}
 	return true
 }

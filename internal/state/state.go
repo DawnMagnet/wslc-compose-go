@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/compose-spec/compose-go/v2/types"
@@ -27,14 +28,33 @@ type Prepared struct {
 	Mounts      map[string][]Mount
 }
 
-// Prepare writes generated files and resolves every secret and config
-// referenced by the selected services. dir is removed by Remove on down.
-func Prepare(dir string, p *types.Project) (*Prepared, error) {
+// Prepare resolves every secret and config referenced by the selected
+// services. When write is false (dry-run) it only computes paths and does
+// not create directories or files. The bool reports whether dir did not
+// exist before this call and write was requested, so a failed up can remove
+// a directory it created.
+func Prepare(dir string, p *types.Project, write bool) (*Prepared, bool, error) {
+	created := false
+	if write {
+		fi, err := os.Lstat(dir)
+		switch {
+		case err == nil && fi.Mode()&os.ModeSymlink != 0:
+			return nil, false, fmt.Errorf("state dir %s is a symlink", dir)
+		case os.IsNotExist(err):
+			created = true
+		case err != nil:
+			return nil, false, err
+		}
+		if err := ensureDir(dir); err != nil {
+			return nil, created, err
+		}
+	}
 	out := &Prepared{
 		Dir:         dir,
 		SecretFiles: map[string]string{},
 		Mounts:      map[string][]Mount{},
 	}
+	w := &genWriter{dir: dir, write: write, done: map[string]string{}}
 	secrets := map[string]types.FileObjectConfig{}
 	configs := map[string]types.FileObjectConfig{}
 	for name, s := range p.Secrets {
@@ -48,9 +68,9 @@ func Prepare(dir string, p *types.Project) (*Prepared, error) {
 		var mounts []Mount
 		for _, raw := range s.Secrets {
 			ref := types.FileReferenceConfig(raw)
-			m, path, err := resolve("secret", ref.Source, ref.Target, secrets[ref.Source], refExists(secrets, ref.Source), ref.Mode, dir)
+			m, path, err := w.resolve("secret", ref.Source, ref.Target, secrets[ref.Source], refExists(secrets, ref.Source), ref.Mode)
 			if err != nil {
-				return nil, fmt.Errorf("service %s: %w", svcName, err)
+				return nil, created, fmt.Errorf("service %s: %w", svcName, err)
 			}
 			if path != "" {
 				out.SecretFiles[ref.Source] = path
@@ -62,9 +82,9 @@ func Prepare(dir string, p *types.Project) (*Prepared, error) {
 		if s.Build != nil {
 			for _, raw := range s.Build.Secrets {
 				ref := types.FileReferenceConfig(raw)
-				_, path, err := resolve("secret", ref.Source, "", secrets[ref.Source], refExists(secrets, ref.Source), ref.Mode, dir)
+				_, path, err := w.resolve("secret", ref.Source, "", secrets[ref.Source], refExists(secrets, ref.Source), ref.Mode)
 				if err != nil {
-					return nil, fmt.Errorf("service %s: build secret: %w", svcName, err)
+					return nil, created, fmt.Errorf("service %s: build secret: %w", svcName, err)
 				}
 				if path != "" {
 					out.SecretFiles[ref.Source] = path
@@ -73,22 +93,22 @@ func Prepare(dir string, p *types.Project) (*Prepared, error) {
 		}
 		for _, raw := range s.Configs {
 			ref := types.FileReferenceConfig(raw)
-			m, _, err := resolve("config", ref.Source, ref.Target, configs[ref.Source], refExists(configs, ref.Source), ref.Mode, dir)
+			m, _, err := w.resolve("config", ref.Source, ref.Target, configs[ref.Source], refExists(configs, ref.Source), ref.Mode)
 			if err != nil {
-				return nil, fmt.Errorf("service %s: %w", svcName, err)
+				return nil, created, fmt.Errorf("service %s: %w", svcName, err)
 			}
 			if m != nil {
 				mounts = append(mounts, *m)
 			}
 		}
 		if err := uniqueTargets(svcName, s, mounts); err != nil {
-			return nil, err
+			return nil, created, err
 		}
 		if len(mounts) > 0 {
 			out.Mounts[svcName] = mounts
 		}
 	}
-	return out, nil
+	return out, created, nil
 }
 
 func refExists(m map[string]types.FileObjectConfig, name string) bool {
@@ -96,23 +116,25 @@ func refExists(m map[string]types.FileObjectConfig, name string) bool {
 	return ok
 }
 
+// genWriter materialises each generated source at most once per Prepare.
+type genWriter struct {
+	dir   string
+	write bool
+	done  map[string]string
+}
+
 // resolve returns the container mount (nil when the object is external) and
 // the host path of a secret (empty for external secrets and for configs).
-func resolve(kind, source, target string, obj types.FileObjectConfig, ok bool, mode *types.FileMode, dir string) (*Mount, string, error) {
+func (w *genWriter) resolve(kind, source, target string, obj types.FileObjectConfig, ok bool, mode *types.FileMode) (*Mount, string, error) {
 	if !ok {
 		return nil, "", fmt.Errorf("%s %q is not defined", kind, source)
 	}
 	if bool(obj.External) {
 		return nil, "", nil
 	}
-	host, err := hostPath(kind, source, obj, dir)
+	host, err := w.hostPath(kind, source, obj, mode)
 	if err != nil {
 		return nil, "", err
-	}
-	if obj.File == "" {
-		if err := ApplyMode(host, true, mode); err != nil {
-			return nil, "", err
-		}
 	}
 	container, err := containerTarget(kind, source, target)
 	if err != nil {
@@ -125,7 +147,7 @@ func resolve(kind, source, target string, obj types.FileObjectConfig, ok bool, m
 	return mount, host, nil
 }
 
-func hostPath(kind, source string, obj types.FileObjectConfig, dir string) (string, error) {
+func (w *genWriter) hostPath(kind, source string, obj types.FileObjectConfig, mode *types.FileMode) (string, error) {
 	label := kind + " " + source
 	if obj.File != "" {
 		info, err := os.Stat(obj.File)
@@ -140,30 +162,96 @@ func hostPath(kind, source string, obj types.FileObjectConfig, dir string) (stri
 	if obj.Content == "" && obj.Environment == "" {
 		return "", fmt.Errorf("%s: needs file, environment, or content", label)
 	}
-	path := filepath.Join(dir, kind+"s", sanitize(source))
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	key := kind + "/" + source
+	if path, ok := w.done[key]; ok {
+		return path, nil
+	}
+	path := filepath.Join(w.dir, kind+"s", sanitize(source))
+	if !w.write {
+		w.done[key] = path
+		return path, nil
+	}
+	if err := writeAtomic(path, []byte(obj.Content), fileMode(kind, mode)); err != nil {
 		return "", err
 	}
-	mode := os.FileMode(0o444)
-	if kind == "secret" {
-		mode = 0o400
-	}
-	if err := os.WriteFile(path, []byte(obj.Content), mode); err != nil {
-		return "", err
-	}
-	if err := os.Chmod(path, mode); err != nil {
-		return "", err
-	}
+	w.done[key] = path
 	return path, nil
 }
 
-// ApplyMode chmods a generated file to the Compose mode. File sources are
-// left alone: changing them would rewrite the user's secret.
-func ApplyMode(path string, generated bool, mode *types.FileMode) error {
-	if !generated || mode == nil {
+func fileMode(kind string, mode *types.FileMode) os.FileMode {
+	if mode != nil {
+		return os.FileMode(*mode) & 0o777
+	}
+	if kind == "secret" {
+		return 0o400
+	}
+	return 0o444
+}
+
+// writeAtomic replaces path without following a symlink and without
+// truncating a read-only file in place. Each generated source is written
+// once; a later Prepare creates a temp file, then renames it into place.
+func writeAtomic(path string, data []byte, mode os.FileMode) error {
+	if fi, err := os.Lstat(path); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s: refusing to follow symlink", path)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	dir := filepath.Dir(path)
+	if err := ensureDir(dir); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, ".wslc-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	done := false
+	defer func() {
+		if !done {
+			f.Close()
+			os.Remove(tmp)
+		}
+	}()
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	if err := f.Chmod(mode); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := replaceFile(tmp, path); err != nil {
+		return err
+	}
+	done = true
+	return os.Chmod(path, mode)
+}
+
+func replaceFile(tmp, path string) error {
+	err := os.Rename(tmp, path)
+	if err == nil || runtime.GOOS != "windows" {
+		return err
+	}
+	// Windows will not rename over an existing read-only file.
+	_ = os.Chmod(path, 0o666)
+	if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func ensureDir(path string) error {
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
+	}
+	if runtime.GOOS == "windows" {
 		return nil
 	}
-	return os.Chmod(path, os.FileMode(*mode)&0o777)
+	return os.Chmod(path, 0o700)
 }
 
 func containerTarget(kind, source, target string) (string, error) {
@@ -215,10 +303,18 @@ func sanitize(name string) string {
 }
 
 // Remove deletes the project state directory. A missing directory is not an error.
+// Read-only generated files are made removable first so Windows can delete them.
 func Remove(dir string) error {
 	if dir == "" {
 		return nil
 	}
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d == nil {
+			return nil
+		}
+		_ = os.Chmod(path, 0o700)
+		return nil
+	})
 	err := os.RemoveAll(dir)
 	if os.IsNotExist(err) {
 		return nil

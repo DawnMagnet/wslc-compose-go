@@ -165,19 +165,22 @@ func TestServiceHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := p.Services["api"]
-	h0, _ := ServiceHash(base)
-	if h1, _ := ServiceHash(base); h0 != h1 || len(h0) != 64 {
+	h0, _ := ServiceHash(base, "3.0.3")
+	if h1, _ := ServiceHash(base, "3.0.3"); h0 != h1 || len(h0) != 64 {
 		t.Fatalf("hash not stable: %s %s", h0, h1)
+	}
+	if legacy, _ := ServiceHash(base, "legacy"); legacy == h0 {
+		t.Fatal("engine tier must change the hash so an older wslc container is recreated")
 	}
 	changed := base
 	changed.Image = "example/api:2.0"
-	if h, _ := ServiceHash(changed); h == h0 {
+	if h, _ := ServiceHash(changed, "3.0.3"); h == h0 {
 		t.Fatal("image change must change the hash")
 	}
 	env := base
 	v := "x"
 	env.Environment = map[string]*string{"NEW": &v}
-	if h, _ := ServiceHash(env); h == h0 {
+	if h, _ := ServiceHash(env, "3.0.3"); h == h0 {
 		t.Fatal("environment change must change the hash")
 	}
 	scaled := base
@@ -188,8 +191,11 @@ func TestServiceHash(t *testing.T) {
 	scaled.Deploy = &deploy
 	scaled.PullPolicy = "always"
 	scaled.DependsOn = nil
-	if h, _ := ServiceHash(scaled); h != h0 {
+	if h, _ := ServiceHash(scaled, "3.0.3"); h != h0 {
 		t.Fatal("scale/pull_policy/depends_on must not change the hash")
+	}
+	if LatestEngine().Tier() != "3.0.3" || (Engine{}).Tier() != "legacy" {
+		t.Fatal("tier mapping")
 	}
 	if *base.Deploy.Replicas != 2 {
 		t.Fatal("ServiceHash must not mutate its input")

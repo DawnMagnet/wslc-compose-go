@@ -79,7 +79,7 @@ func (a *App) converge(ctx context.Context, o UpOptions) (started []string, err 
 	if err := a.ensureResources(ctx, p, rb); err != nil {
 		return nil, err
 	}
-	t, err := a.prepareTranslator(p)
+	t, err := a.prepareTranslator(p, rb)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +101,7 @@ func (a *App) converge(ctx context.Context, o UpOptions) (started []string, err 
 		if err := a.waitDeps(ctx, p, s, o.WaitTimeout); err != nil {
 			return nil, err
 		}
-		hash, err := project.ServiceHash(s)
+		hash, err := project.ServiceHash(s, a.eng.Tier())
 		if err != nil {
 			return nil, err
 		}

@@ -1,0 +1,3 @@
+wslc create --name oneoff -l com.docker.compose.oneoff=True -l com.docker.compose.project=nets -l com.docker.compose.project.config_files=C:/proj/networks.yaml -l com.docker.compose.project.working_dir=C:/proj -l com.docker.compose.service=app -l com.wslc.compose.config-hash=<hash> -l com.wslc.compose.version=dev --network nets_back --ip 172.28.1.10 --dns 1.1.1.1 alpine
+wslc network connect --ip 172.28.0.10 --link-local-ip 169.254.1.10 --driver-opt com.docker.network.endpoint.foo=bar --network-alias app --network-alias www nets_front oneoff
+wslc start oneoff

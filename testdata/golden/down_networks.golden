@@ -1,0 +1,2 @@
+wslc network remove nets_back
+wslc network remove nets_front

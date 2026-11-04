@@ -82,7 +82,7 @@ func (a *App) Build(ctx context.Context, o BuildOptions) error {
 		a.infof("No services to build")
 		return nil
 	}
-	t, err := a.prepareTranslator(p)
+	t, err := a.prepareTranslator(p, nil)
 	if err != nil {
 		return err
 	}
