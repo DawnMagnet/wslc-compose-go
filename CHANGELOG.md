@@ -1,21 +1,43 @@
 # Changelog
 
-## Unreleased
+## v0.2.1 - 2026-11-04
 
 ### Fixed
 
 - `wslc system session run` on wslc 3.0.3.0 can exit 1 with `ERROR_INVALID_HANDLE`
-  after the script has already finished. Host-gateway scripts record their exit
-  status in the session VM (`/run/<owner>.status`). When wslc reports this error,
-  that recorded status is the result, and the full script runs again only when
-  the status for this attempt is missing. `up` keeps a project whose rules were
-  programmed. Each attempt records its own nonce, so an earlier success cannot
-  hide a later failure. On wslc 3.0.3, `down` removes host-gateway rules whenever
-  the compose file uses host-gateway, a container carries the label, or project
-  state records that rules were programmed (the marker is written before the
-  install script and kept if `up` rolls back). A project that does not use
-  host-gateway and has no such record makes no session call. If this wslc
-  cannot run session cleanup, `down` keeps the marker and warns.
+  after the script has already finished. The session script records
+  `<nonce>-<attempt> <exit>` in `/run/<owner>.status` from an `EXIT` trap
+  (temp file, then `mv -f`). On that error the client reads the file and uses
+  only this attempt's line. The full script runs again only when the line is
+  missing, so an earlier success cannot hide a later failure. The outer loop is
+  up to 5 attempts with a 2s backoff. On each `ERROR_INVALID_HANDLE` the status
+  file gets its own up to 5 reads, also with a 2s backoff (not a shared budget).
+  Persistent errors fail after about 8s. The theoretical worst case is about
+  48s of waiting, excluding wslc execution time and flock waits (up to 10s
+  each). `TERM` / `INT` / `HUP` are recorded as 143 / 130 / 129.
+  `ERROR_SHARING_VIOLATION` and `ERROR_ALREADY_EXISTS` are still retried, as in
+  v0.2.0. Session calls, including the status read, pass an empty stdin, and
+  session stdout is captured. On a non-zero script exit, wslc's stderr is kept.
+  Failures writing or renaming the status file are ignored and do not change
+  the exit code. A recorded exit 0 is success. v0.2.0 `down` frequently failed
+  with exit 1 on wslc 3.0.3 (every cycle in our real test) because its host-gateway cleanup session call intermittently fails with
+  `ERROR_INVALID_HANDLE`; that call now uses the
+  recorded status. `up` with host-gateway plus published ports no longer rolls
+  the project back after the chains are installed.
+- Host-gateway cleanup uses a write-ahead marker (`host-gateway` in the project
+  state directory). It is written before the install script and kept if `up`
+  rolls back, so a failed `up` is cleaned on the next `down`. On wslc 3.0.3,
+  `down` runs that cleanup whenever the compose file uses host-gateway, a
+  container carries the label, or the marker is set, which also removes chains
+  left by v0.2.0 (v0.2.0 did not write a marker). An empty `down` of a project
+  that uses host-gateway still runs one idempotent cleanup, same as v0.2.0. A
+  project that does not use host-gateway and has no such record makes no
+  session call. Behavior change: failing to write the marker now fails `up`
+  (the first revision of this fix only warned, and it wrote the marker after
+  the script). On wslc 3.0.1 or an unknown version, a leftover marker makes
+  `down` warn and keep the marker; run `down` again after upgrading to
+  wslc 3.0.3. On wslc 3.0.1, v0.2.1 emits exactly the same commands as v0.2.0;
+  the only new 3.0.1 behavior is the leftover-marker warning.
 
 ## v0.2.0 - 2026-11-04
 
