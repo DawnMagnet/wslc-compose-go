@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -77,6 +79,56 @@ func TestUpNetworksDegradeOnOldWslc(t *testing.T) {
 	if err := h.app.Up(ctx, UpOptions{Detach: true}); !errors.Is(err, project.ErrStrict) {
 		t.Fatalf("strict + old wslc: %v", err)
 	}
+}
+
+func TestUpSecretsGolden(t *testing.T) {
+	h := newHarness(t, "secrets.yaml", func(o *Options) {
+		o.Env = []string{"API_KEY=s3cret-value"}
+	})
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("up: %v\n%s", err, h.stderr.String())
+	}
+	m := h.fake.mutations()
+	if strings.Contains(m, "s3cret-value") || strings.Contains(m, "hello-config") {
+		t.Fatalf("secret bytes leaked onto the command line:\n%s", m)
+	}
+	golden.Assert(t, "up_secrets.golden", m)
+	if !strings.Contains(h.stderr.String(), "external secret") {
+		t.Fatalf("external secret warning missing:\n%s", h.stderr.String())
+	}
+	body, err := os.ReadFile(filepath.Join(h.app.o.StateDir, "sec", "secrets", "api_key"))
+	if err != nil || string(body) != "s3cret-value" {
+		t.Fatalf("generated secret: %q %v", body, err)
+	}
+	if err := h.app.Down(ctx, DownOptions{Timeout: -1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(h.app.o.StateDir, "sec")); !os.IsNotExist(err) {
+		t.Fatalf("state dir not removed: %v", err)
+	}
+
+	h = newHarness(t, "secrets.yaml", func(o *Options) {
+		o.Env = []string{"API_KEY=s3cret-value"}
+	})
+	h.fake.version = "wslc version 3.0.1.0"
+	if err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatalf("old wslc: %v\n%s", err, h.stderr.String())
+	}
+	old := h.fake.mutations()
+	if strings.Contains(old, "--secret") {
+		t.Fatalf("old wslc was sent build --secret:\n%s", old)
+	}
+	if !strings.Contains(old, ":/run/secrets/token:ro") || !strings.Contains(h.stderr.String(), "build --secret") {
+		t.Fatalf("runtime mounts should remain while build secrets warn:\n%s\n%s", old, h.stderr.String())
+	}
+	dry := newHarness(t, "secrets.yaml", func(o *Options) {
+		o.Env = []string{"API_KEY=s3cret-value"}
+		o.DryRun = true
+	})
+	if err := dry.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); err != nil {
+		t.Fatal(err)
+	}
+	golden.Assert(t, "dryrun_secrets.golden", hashRE.ReplaceAllString(dry.stdout.String(), "config-hash=<hash>"))
 }
 
 func TestUpIsIdempotent(t *testing.T) {

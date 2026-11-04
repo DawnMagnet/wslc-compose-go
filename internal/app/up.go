@@ -75,10 +75,15 @@ func (a *App) converge(ctx context.Context, o UpOptions) (started []string, err 
 			rb.run(context.WithoutCancel(ctx), a)
 		}
 	}()
+	a.noteEngine()
 	if err := a.ensureResources(ctx, p, rb); err != nil {
 		return nil, err
 	}
-	rebuilt, err := a.prepareImages(ctx, p, imageOptions{build: o.Build, noBuild: o.NoBuild, pull: o.Pull})
+	t, err := a.prepareTranslator(p)
+	if err != nil {
+		return nil, err
+	}
+	rebuilt, err := a.prepareImages(ctx, p, t, imageOptions{build: o.Build, noBuild: o.NoBuild, pull: o.Pull})
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +96,6 @@ func (a *App) converge(ctx context.Context, o UpOptions) (started []string, err 
 	if err != nil {
 		return nil, err
 	}
-	t := a.translator(p)
 	for _, name := range names {
 		s := p.Services[name]
 		if err := a.waitDeps(ctx, p, s, o.WaitTimeout); err != nil {

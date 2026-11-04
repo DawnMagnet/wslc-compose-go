@@ -9,7 +9,9 @@ import (
 	"io"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/types"
@@ -18,6 +20,7 @@ import (
 	"github.com/DawnMagnet/wslc-compose-go/internal/paths"
 	"github.com/DawnMagnet/wslc-compose-go/internal/plan"
 	"github.com/DawnMagnet/wslc-compose-go/internal/project"
+	"github.com/DawnMagnet/wslc-compose-go/internal/state"
 	"github.com/DawnMagnet/wslc-compose-go/internal/translate"
 	"github.com/DawnMagnet/wslc-compose-go/internal/wslc"
 )
@@ -38,6 +41,7 @@ type Options struct {
 	PollEvery   time.Duration // dependency wait poll interval (default 1s)
 	Env         []string      // extra environment for interpolation (tests)
 	IgnoreOSEnv bool          // hermetic loading (tests)
+	StateDir    string        // root for generated secrets/configs; empty uses the user config dir
 }
 
 // App executes compose use cases against one wslc client.
@@ -48,6 +52,7 @@ type App struct {
 	io     wslc.IO
 	eng    project.Engine
 	engSet bool
+	noted  bool
 	caps   wslc.Capabilities
 }
 
@@ -125,21 +130,76 @@ func (a *App) engine(ctx context.Context) project.Engine {
 		return a.eng
 	}
 	a.caps = wslc.ParseCapabilities(a.c.Version(ctx))
-	if !a.caps.Known {
-		if a.o.DryRun {
-			a.caps = wslc.AssumeCurrent()
-		} else {
-			a.infof("WARN wslc version unknown; multi-network attach, static IPv4 and IP ranges are disabled")
-		}
+	if !a.caps.Known && a.o.DryRun {
+		a.caps = wslc.AssumeCurrent()
 	}
 	a.eng = project.Engine{
 		MultiNetwork:   a.caps.AtLeast(wslc.VerEndpoints),
 		StaticIPv4:     a.caps.AtLeast(wslc.VerEndpoints),
 		IPRange:        a.caps.AtLeast(wslc.VerEndpoints),
 		EndpointExtras: a.caps.AtLeast(wslc.VerEndpoints),
+		BuildSecret:    a.caps.AtLeast(wslc.VerBuildSecret),
 	}
 	a.engSet = true
 	return a.eng
+}
+
+// noteEngine warns once when a real run could not read wslc's version and
+// therefore left gated features off. `config` stays quiet: it never calls this.
+func (a *App) noteEngine() {
+	if a.noted || a.caps.Known || a.caps.Assumed {
+		return
+	}
+	a.noted = true
+	a.infof("WARN wslc version unknown; multi-network attach, static IPv4, IP ranges and build --secret are disabled")
+}
+
+// projectState is the directory that holds generated secret and config files
+// for one project. It is removed by down.
+func (a *App) projectState(project string) (string, error) {
+	root := a.o.StateDir
+	if root == "" {
+		var err error
+		root, err = os.UserConfigDir()
+		if err != nil {
+			root = os.TempDir()
+		}
+		root = filepath.Join(root, "wslc-compose")
+	}
+	project = strings.Map(func(r rune) rune {
+		if r == os.PathSeparator || r == '/' || r == '\\' {
+			return '_'
+		}
+		return r
+	}, project)
+	if project == "" || project == "." || project == ".." {
+		return "", fmt.Errorf("invalid project name %q", project)
+	}
+	return filepath.Join(root, project), nil
+}
+
+// prepareTranslator resolves secret and config files, then returns the
+// translator that mounts them.
+func (a *App) prepareTranslator(p *types.Project) (*translate.Translator, error) {
+	t := a.translator(p)
+	dir, err := a.projectState(p.Name)
+	if err != nil {
+		return nil, err
+	}
+	prep, err := state.Prepare(dir, p)
+	if err != nil {
+		return nil, err
+	}
+	t.SecretFiles = prep.SecretFiles
+	if len(prep.Mounts) > 0 {
+		t.Mounts = map[string][]translate.FileMount{}
+		for svc, ms := range prep.Mounts {
+			for _, m := range ms {
+				t.Mounts[svc] = append(t.Mounts[svc], translate.FileMount{Source: m.Source, Target: m.Target})
+			}
+		}
+	}
+	return t, nil
 }
 
 func (a *App) translator(p *types.Project) *translate.Translator {
@@ -148,10 +208,11 @@ func (a *App) translator(p *types.Project) *translate.Translator {
 		files[i] = a.paths(f)
 	}
 	return &translate.Translator{
-		Project:      p,
-		Paths:        a.paths,
-		DefaultDNS:   a.o.DefaultDNS,
-		OmitStaticIP: a.engSet && !a.eng.StaticIPv4,
+		Project:           p,
+		Paths:             a.paths,
+		DefaultDNS:        a.o.DefaultDNS,
+		OmitStaticIP:      a.engSet && !a.eng.StaticIPv4,
+		AllowBuildSecrets: !a.engSet || a.eng.BuildSecret,
 		Meta: labels.Meta{
 			Project: p.Name, WorkingDir: a.paths(p.WorkingDir),
 			ConfigFiles: files, Version: Version,

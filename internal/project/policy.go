@@ -62,8 +62,6 @@ var serviceRules = []rule{
 	{"security_opt", ignored, func(s *types.ServiceConfig) bool { return len(s.SecurityOpt) > 0 }},
 	{"sysctls", ignored, func(s *types.ServiceConfig) bool { return len(s.Sysctls) > 0 }},
 	{"extra_hosts", ignored, func(s *types.ServiceConfig) bool { return len(s.ExtraHosts) > 0 }},
-	{"secrets", "secrets are not implemented by wslc; ignored", func(s *types.ServiceConfig) bool { return len(s.Secrets) > 0 }},
-	{"configs", "configs are not implemented by wslc; ignored", func(s *types.ServiceConfig) bool { return len(s.Configs) > 0 }},
 	{"logging", "wslc has no log drivers; ignored", func(s *types.ServiceConfig) bool { return s.Logging != nil || s.LogDriver != "" }},
 	{"platform", "wslc runs host-architecture images only; ignored", func(s *types.ServiceConfig) bool { return s.Platform != "" }},
 	{"init", ignored, func(s *types.ServiceConfig) bool { return s.Init != nil && *s.Init }},
@@ -96,8 +94,8 @@ var serviceRules = []rule{
 	{"provider", "provider services are not implemented; ignored", func(s *types.ServiceConfig) bool { return s.Provider != nil }},
 	{"models", "AI models are not implemented; ignored", func(s *types.ServiceConfig) bool { return len(s.Models) > 0 }},
 	{"use_api_socket", "wslc exposes no Docker socket; ignored", func(s *types.ServiceConfig) bool { return s.UseAPISocket }},
-	{"build.secrets/ssh", "wslc build has no --secret/--ssh; ignored", func(s *types.ServiceConfig) bool {
-		return s.Build != nil && (len(s.Build.Secrets) > 0 || len(s.Build.SSH) > 0)
+	{"build.ssh", "wslc build has no --ssh; ignored", func(s *types.ServiceConfig) bool {
+		return s.Build != nil && len(s.Build.SSH) > 0
 	}},
 	{"build.platforms/cache_from/cache_to", "wslc build has no buildx features; ignored", func(s *types.ServiceConfig) bool {
 		return s.Build != nil && (len(s.Build.Platforms) > 0 || len(s.Build.CacheFrom) > 0 || len(s.Build.CacheTo) > 0)
@@ -118,11 +116,12 @@ type Engine struct {
 	StaticIPv4     bool // --ip on run/create and network connect
 	IPRange        bool // network create --ip-range
 	EndpointExtras bool // --link-local-ip and --driver-opt on network connect
+	BuildSecret    bool // wslc build --secret
 }
 
 // LatestEngine is a current wslc (3.0.3.0 feature floors).
 func LatestEngine() Engine {
-	return Engine{MultiNetwork: true, StaticIPv4: true, IPRange: true, EndpointExtras: true}
+	return Engine{MultiNetwork: true, StaticIPv4: true, IPRange: true, EndpointExtras: true, BuildSecret: true}
 }
 
 // Check reports fields the latest known wslc still cannot honor.
@@ -140,6 +139,14 @@ func CheckEngine(p *types.Project, eng Engine) []Issue {
 			}
 		}
 		out = append(out, checkDynamic(name, &s, eng)...)
+		out = append(out, checkFileRefs(name, "secret", secretRefs(s.Secrets), secretObjects(p), eng)...)
+		out = append(out, checkFileRefs(name, "config", configRefs(s.Configs), configObjects(p), eng)...)
+		if s.Build != nil {
+			out = append(out, checkFileRefs(name, "build.secret", secretRefs(s.Build.Secrets), secretObjects(p), eng)...)
+			if len(s.Build.Secrets) > 0 && !eng.BuildSecret {
+				out = append(out, Issue{Warn, name, "build.secrets", "this wslc build has no build --secret; ignored"})
+			}
+		}
 	}
 	for _, name := range sortedKeys(p.Networks) {
 		n := p.Networks[name]
@@ -181,8 +188,71 @@ func CheckEngine(p *types.Project, eng Engine) []Issue {
 			out = append(out, Issue{Warn, "", "volumes." + name + ".driver", "volume drivers/options are ignored"})
 		}
 	}
-	if len(p.Secrets) > 0 || len(p.Configs) > 0 {
-		out = append(out, Issue{Warn, "", "secrets/configs", "top-level secrets and configs are ignored"})
+	return out
+}
+
+func secretRefs(in []types.ServiceSecretConfig) []types.FileReferenceConfig {
+	out := make([]types.FileReferenceConfig, len(in))
+	for i, r := range in {
+		out[i] = types.FileReferenceConfig(r)
+	}
+	return out
+}
+
+func configRefs(in []types.ServiceConfigObjConfig) []types.FileReferenceConfig {
+	out := make([]types.FileReferenceConfig, len(in))
+	for i, r := range in {
+		out[i] = types.FileReferenceConfig(r)
+	}
+	return out
+}
+
+func secretObjects(p *types.Project) map[string]types.FileObjectConfig {
+	out := make(map[string]types.FileObjectConfig, len(p.Secrets))
+	for k, v := range p.Secrets {
+		out[k] = types.FileObjectConfig(v)
+	}
+	return out
+}
+
+func configObjects(p *types.Project) map[string]types.FileObjectConfig {
+	out := make(map[string]types.FileObjectConfig, len(p.Configs))
+	for k, v := range p.Configs {
+		out[k] = types.FileObjectConfig(v)
+	}
+	return out
+}
+
+func checkFileRefs(service, kind string, refs []types.FileReferenceConfig, objs map[string]types.FileObjectConfig, eng Engine) []Issue {
+	var out []Issue
+	for _, ref := range refs {
+		obj, ok := objs[ref.Source]
+		field := kind + "s"
+		if kind == "build.secret" {
+			field = "build.secrets"
+		}
+		if !ok {
+			out = append(out, Issue{Warn, service, field, fmt.Sprintf("%s %q is not defined", kind, ref.Source)})
+			continue
+		}
+		if bool(obj.External) {
+			out = append(out, Issue{Warn, service, field, fmt.Sprintf("external %s %q is not provided by wslc; the mount is skipped", kind, ref.Source)})
+		}
+		if ref.UID != "" || ref.GID != "" {
+			out = append(out, Issue{Warn, service, field + "." + ref.Source + ".uid", "wslc bind mounts cannot set uid or gid; ignored"})
+		}
+		// mode on a file: source is the host file's mode. Generated
+		// environment/content files are chmod'd to the requested mode.
+		if ref.Mode != nil && obj.File != "" && !bool(obj.External) {
+			out = append(out, Issue{Warn, service, field + "." + ref.Source + ".mode", "mode is not applied to file: sources; the host file's mode is used"})
+		}
+		if obj.TemplateDriver != "" {
+			out = append(out, Issue{Warn, service, field + "." + ref.Source + ".template_driver", ignored})
+		}
+		if obj.Driver != "" {
+			out = append(out, Issue{Warn, service, field + "." + ref.Source + ".driver", "secret/config drivers are ignored"})
+		}
+		_ = eng
 	}
 	return out
 }

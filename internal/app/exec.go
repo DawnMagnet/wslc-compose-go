@@ -92,6 +92,7 @@ func (a *App) Run(ctx context.Context, o RunOptions) error {
 	if err != nil {
 		return err
 	}
+	a.noteEngine()
 	if deps := s.GetDependencies(); len(deps) > 0 && !o.NoDeps {
 		if err := a.Up(ctx, UpOptions{Services: deps, Detach: true, Build: o.Build, Timeout: -1}); err != nil {
 			return err
@@ -103,7 +104,11 @@ func (a *App) Run(ctx context.Context, o RunOptions) error {
 	if err != nil {
 		return err
 	}
-	if _, err := a.prepareImages(ctx, only, imageOptions{build: o.Build}); err != nil {
+	tr, err := a.prepareTranslator(p)
+	if err != nil {
+		return err
+	}
+	if _, err := a.prepareImages(ctx, only, tr, imageOptions{build: o.Build}); err != nil {
 		return err
 	}
 	if o.User != "" {
@@ -130,7 +135,6 @@ func (a *App) Run(ctx context.Context, o RunOptions) error {
 	if len(o.Command) > 0 {
 		cmd = o.Command
 	}
-	tr := a.translator(p)
 	ro := translate.RunOptions{
 		Name: name, Hash: hash, Detach: o.Detach, Remove: o.Remove,
 		Command: cmd, NoTTY: o.NoTTY, TTY: !o.NoTTY && !o.Detach,

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -142,14 +143,24 @@ type harness struct {
 func newHarness(t *testing.T, file string, mod func(*Options)) *harness {
 	t.Helper()
 	h := &harness{fake: &fakeWSLC{images: map[string]bool{}, health: map[string][]string{}, logs: map[string]string{}, exited: map[string]int{}}}
+	stateDir := t.TempDir()
 	o := Options{
 		Files: []string{golden.Compose(file)}, IgnoreOSEnv: true, Bin: "wslc",
 		DefaultDNS: []string{"1.1.1.1"}, PollEvery: time.Millisecond,
+		StateDir: stateDir,
 	}
 	if mod != nil {
 		mod(&o)
 	}
-	h.app = New(o, h.fake, golden.Paths, wslc.IO{Stdout: &h.stdout, Stderr: &h.stderr})
+	mapPath := func(p string) string {
+		slash := filepath.ToSlash(p)
+		root := filepath.ToSlash(stateDir)
+		if strings.HasPrefix(slash, root) {
+			return "C:/state" + strings.TrimPrefix(slash, root)
+		}
+		return golden.Paths(p)
+	}
+	h.app = New(o, h.fake, mapPath, wslc.IO{Stdout: &h.stdout, Stderr: &h.stderr})
 	return h
 }
 

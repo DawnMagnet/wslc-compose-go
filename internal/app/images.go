@@ -19,10 +19,12 @@ type imageOptions struct {
 // prepareImages builds or pulls images according to pull_policy and flags.
 // It returns the services whose image was (re)built, which must be
 // recreated even if their configuration hash is unchanged.
-func (a *App) prepareImages(ctx context.Context, p *types.Project, o imageOptions) (map[string]bool, error) {
+func (a *App) prepareImages(ctx context.Context, p *types.Project, t *translate.Translator, o imageOptions) (map[string]bool, error) {
 	rebuilt := map[string]bool{}
 	pulled := map[string]bool{}
-	t := a.translator(p)
+	if t == nil {
+		t = a.translator(p)
+	}
 	stdio := wslc.IO{Stdout: a.io.Stderr, Stderr: a.io.Stderr}
 	for _, name := range p.ServiceNames() {
 		s := p.Services[name]
@@ -75,11 +77,16 @@ func (a *App) Build(ctx context.Context, o BuildOptions) error {
 	if err != nil {
 		return err
 	}
+	a.noteEngine()
 	if !slices.ContainsFunc(p.ServiceNames(), func(n string) bool { return p.Services[n].Build != nil }) {
 		a.infof("No services to build")
 		return nil
 	}
-	_, err = a.prepareImages(ctx, p, imageOptions{build: true, noCache: o.NoCache, pullOnBuild: o.Pull, pull: types.PullPolicyNever})
+	t, err := a.prepareTranslator(p)
+	if err != nil {
+		return err
+	}
+	_, err = a.prepareImages(ctx, p, t, imageOptions{build: true, noCache: o.NoCache, pullOnBuild: o.Pull, pull: types.PullPolicyNever})
 	return err
 }
 

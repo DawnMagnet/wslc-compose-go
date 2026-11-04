@@ -97,7 +97,7 @@ func TestPolicy(t *testing.T) {
 		fields[i.Field] = true
 	}
 	for _, f := range []string{"restart", "privileged", "cap_add", "devices", "security_opt", "sysctls",
-		"extra_hosts", "secrets", "logging", "platform", "network_mode"} {
+		"extra_hosts", "logging", "platform", "network_mode"} {
 		if !fields[f] {
 			t.Errorf("missing issue for %s", f)
 		}

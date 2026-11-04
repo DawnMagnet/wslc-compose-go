@@ -7,6 +7,7 @@ import (
 
 	"github.com/compose-spec/compose-go/v2/types"
 
+	"github.com/DawnMagnet/wslc-compose-go/internal/state"
 	"github.com/DawnMagnet/wslc-compose-go/internal/wslc"
 )
 
@@ -57,7 +58,21 @@ func (a *App) Down(ctx context.Context, o DownOptions) error {
 			return err
 		}
 	}
-	return a.removeResources(ctx, p, o.Volumes)
+	if err := a.removeResources(ctx, p, o.Volumes); err != nil {
+		return err
+	}
+	return a.removeState(p.Name)
+}
+
+func (a *App) removeState(project string) error {
+	dir, err := a.projectState(project)
+	if err != nil {
+		return err
+	}
+	if err := state.Remove(dir); err != nil {
+		a.infof("WARN could not remove generated secrets/configs in %s: %v", dir, err)
+	}
+	return nil
 }
 
 func (a *App) removeResources(ctx context.Context, p *types.Project, volumes bool) error {
