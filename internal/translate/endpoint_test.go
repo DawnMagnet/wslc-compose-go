@@ -79,9 +79,10 @@ func TestValidateServiceNetworks(t *testing.T) {
 		Services: types.Services{"a": lone},
 		Networks: types.Networks{"n": {Ipam: types.IPAMConfig{Config: []*types.IPAMPool{{Subnet: "10.0.0.0/24", IPRange: "10.1.0.0/24"}}}}},
 	}
-	// No static address: the subnet is still handed to wslc, on every version.
-	if warns, err := ValidateServiceNetworks(badRange, true); err != nil || len(warns) == 0 || !strings.Contains(warns[0], "ip_range") {
-		t.Fatalf("pool without a static address must warn: warns=%v err=%v", warns, err)
+	// 3.0.3 sends --ip-range, which v0.1.5 never did, so a range outside the
+	// subnet is a hard error even with no static address.
+	if _, err := ValidateServiceNetworks(badRange, true); err == nil || !strings.Contains(err.Error(), "ip_range") {
+		t.Fatalf("ip_range outside the subnet: %v", err)
 	}
 	if warns, err := ValidateServiceNetworks(badRange, false); err != nil || len(warns) == 0 || !strings.Contains(warns[0], "ip_range") {
 		t.Fatalf("old wslc should warn, not fail: warns=%v err=%v", warns, err)

@@ -63,6 +63,9 @@ func (a *App) converge(ctx context.Context, o UpOptions) (started []string, err 
 	if err != nil {
 		return nil, err
 	}
+	if err := a.requireKnownVersion(); err != nil {
+		return nil, err
+	}
 	if err := applyScale(p, o.Scale); err != nil {
 		return nil, err
 	}

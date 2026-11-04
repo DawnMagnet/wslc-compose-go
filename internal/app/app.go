@@ -100,13 +100,20 @@ func (a *App) load(ctx context.Context, services []string, noDeps, quiet bool) (
 	if err != nil {
 		return nil, err
 	}
-	// After the version probe and field policy, before any mutation. config
-	// uses loadRaw and is not affected.
-	if a.versionUnknown() && a.o.Strict {
-		return nil, fmt.Errorf("wslc version unknown (--strict): %w", project.ErrStrict)
-	}
 	project.NameAnonymousVolumes(p)
 	return p, nil
+}
+
+// requireKnownVersion rejects --strict when `wslc --version` could not be
+// read. Only commands that create or change containers, images, or networks
+// (up, run, build, and the create path those use) call this, and they call
+// it after the version probe and before any mutation. down, start, stop,
+// restart, ps, logs, and exec keep working.
+func (a *App) requireKnownVersion() error {
+	if a.versionUnknown() && a.o.Strict {
+		return fmt.Errorf("wslc version unknown (--strict): %w", project.ErrStrict)
+	}
+	return nil
 }
 
 // loadRaw is load without wslc-specific rewrites (used by `config`).

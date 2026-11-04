@@ -63,10 +63,12 @@ func endpointAliases(s types.ServiceConfig, key string) []string {
 
 // ValidateServiceNetworks checks static addresses and IPAM.
 // Address checks run only when staticIP is set, because older wslc builds
-// never receive --ip and v0.1.5 only warned. A pool is a hard error only
+// never receive --ip and v0.1.5 only warned. staticIP is the 3.0.3 endpoint
+// feature set, which is also when --ip-range is sent. A pool is a hard error
 // when this process will create that network and a service puts a static
-// IPv4 address on it. Every other pool problem is a warning, and the subnet
-// is still passed to wslc. External networks are not validated.
+// IPv4 address on it, or when --ip-range would be sent for a range outside
+// the subnet. IPv6-only subnets and prefixes tighter than /30 stay warnings
+// and the subnet is still passed to wslc. External networks are not validated.
 func ValidateServiceNetworks(p *types.Project, staticIP bool) (warnings []string, err error) {
 	if staticIP {
 		if err = validateAddresses(p); err != nil {
@@ -96,7 +98,9 @@ func ValidateServiceNetworks(p *types.Project, staticIP bool) (warnings []string
 		if msg == "" {
 			continue
 		}
-		if staticOn[key] {
+		// --ip-range is new in 3.0.3. A range outside the subnet must fail
+		// before network create, even when no service assigns a static address.
+		if staticOn[key] || (staticIP && rangeOutside(n)) {
 			return nil, fmt.Errorf("%s", msg)
 		}
 		warnings = append(warnings, msg)
@@ -170,6 +174,18 @@ func addressInNetwork(service, key string, ip net.IP, n types.NetworkConfig) err
 		return fmt.Errorf("service %q network %q: ipv4_address %s is the gateway", service, key, ip)
 	}
 	return nil
+}
+
+// rangeOutside reports an ip_range that 3.0.3 would pass to --ip-range
+// and that does not sit inside the subnet. IPv6 and missing subnets are
+// left to the warning path; those still use --subnet, as v0.1.5 did.
+func rangeOutside(n types.NetworkConfig) bool {
+	pool, prefix := firstPool(n)
+	if pool == nil || pool.IPRange == "" || prefix == nil {
+		return false
+	}
+	_, rng, err := net.ParseCIDR(pool.IPRange)
+	return err != nil || rng.IP.To4() == nil || !cidrInside(prefix, rng)
 }
 
 func poolProblem(key string, n types.NetworkConfig) string {

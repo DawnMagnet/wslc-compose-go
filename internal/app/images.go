@@ -83,6 +83,9 @@ func (a *App) Build(ctx context.Context, o BuildOptions) (err error) {
 	if err != nil {
 		return err
 	}
+	if err := a.requireKnownVersion(); err != nil {
+		return err
+	}
 	a.noteEngine()
 	if !slices.ContainsFunc(p.ServiceNames(), func(n string) bool { return p.Services[n].Build != nil }) {
 		a.infof("No services to build")

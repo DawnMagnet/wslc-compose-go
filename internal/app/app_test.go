@@ -484,6 +484,34 @@ networks:
 	}
 }
 
+func TestIPRangeOutsideSubnetDoesNotMutate(t *testing.T) {
+	body := `
+name: range
+services:
+  web:
+    image: alpine:missing
+    networks: [n]
+networks:
+  n:
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24
+          ip_range: 10.1.0.0/24
+`
+	path := filepath.Join(t.TempDir(), "compose.yaml")
+	if err := os.WriteFile(path, []byte(strings.TrimSpace(body)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := newHarness(t, "minimal.yaml", func(o *Options) { o.Files = []string{path} })
+	err := h.app.Up(ctx, UpOptions{Detach: true, Timeout: -1})
+	if err == nil || !strings.Contains(err.Error(), "ip_range") {
+		t.Fatalf("up: %v", err)
+	}
+	if m := h.fake.mutations(); m != "" {
+		t.Fatalf("ip_range failure mutated wslc:\n%s", m)
+	}
+}
+
 func TestRunValidatesBeforeCreate(t *testing.T) {
 	body := `
 name: badrun
@@ -511,6 +539,42 @@ networks:
 	}
 	if m := h.fake.mutations(); m != "" {
 		t.Fatalf("validation failure mutated wslc:\n%s", m)
+	}
+}
+
+func TestStrictUnknownAllowsInspectAndDown(t *testing.T) {
+	strict := func() *harness {
+		t.Helper()
+		h := newHarness(t, "minimal.yaml", func(o *Options) { o.Strict = true })
+		h.fake.version = "not a version"
+		return h
+	}
+	up := strict()
+	if err := up.app.Up(ctx, UpOptions{Detach: true, Timeout: -1}); !errors.Is(err, project.ErrStrict) {
+		t.Fatalf("up: %v", err)
+	}
+	assertVersionOnly(t, up.fake)
+
+	down := strict()
+	if err := down.app.Down(ctx, DownOptions{Timeout: -1}); err != nil {
+		t.Fatalf("down: %v\n%s", err, down.stderr.String())
+	}
+	if m := down.fake.mutations(); m != "" {
+		t.Fatalf("down mutated:\n%s", m)
+	}
+	ps := strict()
+	if err := ps.app.Ps(ctx, PsOptions{}); err != nil {
+		t.Fatalf("ps: %v\n%s", err, ps.stderr.String())
+	}
+	if m := ps.fake.mutations(); m != "" {
+		t.Fatalf("ps mutated:\n%s", m)
+	}
+	stop := strict()
+	if err := stop.app.Stop(ctx, nil, -1); err != nil {
+		t.Fatalf("stop: %v\n%s", err, stop.stderr.String())
+	}
+	if m := stop.fake.mutations(); m != "" {
+		t.Fatalf("stop mutated:\n%s", m)
 	}
 }
 

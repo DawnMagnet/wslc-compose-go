@@ -94,6 +94,9 @@ func (a *App) Run(ctx context.Context, o RunOptions) (err error) {
 	if err != nil {
 		return err
 	}
+	if err := a.requireKnownVersion(); err != nil {
+		return err
+	}
 	s, err := p.GetService(o.Service)
 	if err != nil {
 		return err
