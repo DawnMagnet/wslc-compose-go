@@ -167,10 +167,9 @@ func wrapSessionScript(script, statusPath, nonce string) string {
 	b.WriteString("trap 'exit 130' INT\n")
 	b.WriteString("trap 'exit 129' HUP\n")
 	// set -e is still on inside the trap. A failing mv is the last command of
-	// the && list, so it must not be allowed to replace $_wcg_rc. The group
-	// swallows the failure and any Permission denied, then the original
-	// status is restored. A leftover temp file is removed.
-	b.WriteString("trap '_wcg_rc=$?; _wcg_tmp=\"${_wcg_status}.${_wcg_nonce}\"; { printf \"%s %s\\n\" \"$_wcg_nonce\" \"$_wcg_rc\" > \"$_wcg_tmp\" && mv -f \"$_wcg_tmp\" \"$_wcg_status\"; } 2>/dev/null || { rm -f \"$_wcg_tmp\" 2>/dev/null; :; }; exit $_wcg_rc' EXIT\n")
+	// the && list, and a following rm can fail too once the directory is not
+	// writable. Both sit in an || list so neither can replace $_wcg_rc.
+	b.WriteString("trap '_wcg_rc=$?; _wcg_tmp=\"${_wcg_status}.${_wcg_nonce}\"; { printf \"%s %s\\n\" \"$_wcg_nonce\" \"$_wcg_rc\" > \"$_wcg_tmp\" && mv -f \"$_wcg_tmp\" \"$_wcg_status\"; } 2>/dev/null || rm -f \"$_wcg_tmp\" 2>/dev/null || :; exit $_wcg_rc' EXIT\n")
 	b.WriteString(script)
 	if !strings.HasSuffix(script, "\n") {
 		b.WriteByte('\n')

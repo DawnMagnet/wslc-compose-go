@@ -73,6 +73,43 @@ func TestSessionTrapKeepsExitWhenStatusWriteFails(t *testing.T) {
 				}
 				assertNoStatusFiles(t, ro)
 			})
+			t.Run(fmt.Sprintf("%s/mv-after-chmod/%d", sh.name, code), func(t *testing.T) {
+				// printf creates the temp file, then mv makes the directory
+				// unwritable and the real mv fails. rm cannot unlink either.
+				dir := t.TempDir()
+				if sh.cred != nil {
+					if err := os.Chown(dir, int(sh.cred.Uid), int(sh.cred.Gid)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+				realMV, err := exec.LookPath("mv")
+				if err != nil {
+					t.Fatal(err)
+				}
+				bin := filepath.Join(dir, "bin")
+				if err := os.Mkdir(bin, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				wrapper := "#!/bin/sh\ndir=$(dirname \"$3\")\nchmod a-w \"$dir\"\nexec " + realMV + " \"$@\"\n"
+				if err := os.WriteFile(filepath.Join(bin, "mv"), []byte(wrapper), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				status := filepath.ToSlash(filepath.Join(dir, "s.status"))
+				got, stderr := runStatusScript(t, sh, fmt.Sprintf("set -eu\nexit %d\n", code), status, bin+":"+os.Getenv("PATH"))
+				if got != code {
+					t.Fatalf("exit %d, want %d; stderr %q", got, code, stderr)
+				}
+				if stderr != "" {
+					t.Fatalf("stderr %q", stderr)
+				}
+				if _, err := os.Stat(filepath.FromSlash(status)); !os.IsNotExist(err) {
+					t.Fatalf("mv should not have installed the status file: %v", err)
+				}
+				if _, err := os.Stat(filepath.FromSlash(status) + ".abc1"); err != nil {
+					t.Fatalf("temp file should remain when rm cannot unlink it: %v", err)
+				}
+			})
 		}
 	}
 }
