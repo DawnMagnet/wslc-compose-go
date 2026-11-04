@@ -241,7 +241,9 @@ func (a *App) prepareTranslator(p *types.Project, rb *rollback) (*translate.Tran
 	write := !a.c.DryRun()
 	prep, created, err := state.Prepare(dir, p, write)
 	if created && rb != nil {
-		rb.add("State", dir, func(context.Context, string) error { return state.Remove(dir) })
+		// Keep a host-gateway marker. The install script may already have
+		// created chains by the time up fails and this directory is undone.
+		rb.add("State", dir, func(context.Context, string) error { return state.RemoveKeepingGateway(dir) })
 	}
 	if err != nil {
 		return nil, err

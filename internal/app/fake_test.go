@@ -22,21 +22,26 @@ import (
 
 // fakeWSLC emulates just enough of the wslc CLI for orchestration tests.
 type fakeWSLC struct {
-	mu          sync.Mutex
-	calls       []string
-	containers  []map[string]any
-	networks    []string
-	volumes     []string
-	images      map[string]bool
-	health      map[string][]string // per-container sequence of health states
-	logs        map[string]string
-	exited      map[string]int            // containers that report exited with this code
-	failRun     string                    // `run` of this container name fails
-	failBuild   bool                      // `build` fails
-	failSession bool                      // `system session run` fails
-	version     string                    // `wslc --version` text; empty means 3.0.3.0
-	runtime     map[string]map[string]any // extra inspect fields keyed by container name
-	track       bool                      // record containers created by run/create
+	mu           sync.Mutex
+	calls        []string
+	containers   []map[string]any
+	networks     []string
+	volumes      []string
+	images       map[string]bool
+	health       map[string][]string // per-container sequence of health states
+	logs         map[string]string
+	exited       map[string]int // containers that report exited with this code
+	failRun      string         // `run` of this container name fails
+	failBuild    bool           // `build` fails
+	failSession  bool           // `system session run` fails
+	sessionFlaky bool           // script runs, wslc still returns ERROR_INVALID_HANDLE
+	sessionCode  int            // exit status recorded by the script when sessionFlaky
+	sessionExit  int            // >0: the gateway script exits with this code
+	lastSession  string
+	recorded     string
+	version      string                    // `wslc --version` text; empty means 3.0.3.0
+	runtime      map[string]map[string]any // extra inspect fields keyed by container name
+	track        bool                      // record containers created by run/create
 }
 
 func (f *fakeWSLC) Run(ctx context.Context, args []string, stdio wslc.IO) error {
@@ -111,11 +116,48 @@ func (f *fakeWSLC) Run(ctx context.Context, args []string, stdio wslc.IO) error 
 		}
 		fmt.Fprintln(out, v)
 	}
-	if f.failSession && len(args) >= 2 && args[0] == "system" && args[1] == "session" {
-		return errors.New("iptables failed")
+	if len(args) >= 2 && args[0] == "system" && args[1] == "session" {
+		script := args[len(args)-1]
+		if f.sessionExit > 0 && !strings.HasPrefix(script, "cat ") {
+			return &wslc.Error{Args: args, Code: f.sessionExit, Stderr: "iptables: chain in use"}
+		}
+		if f.sessionFlaky {
+			if strings.HasPrefix(script, "cat ") {
+				path := strings.TrimSpace(strings.TrimPrefix(script, "cat "))
+				if f.recorded == "" || !strings.Contains(f.lastSession, "'"+path+"'") {
+					return &wslc.Error{Args: args, Code: 1, Stderr: "cat: " + path + ": No such file or directory"}
+				}
+				fmt.Fprint(out, f.recorded)
+				return nil
+			}
+			nonce := between(script, "_wcg_nonce='", "'")
+			status := between(script, "_wcg_status='", "'")
+			if nonce == "" || status == "" {
+				return errors.New("session script has no status trap")
+			}
+			f.lastSession = script
+			f.recorded = fmt.Sprintf("%s %d\n", nonce, f.sessionCode)
+			return &wslc.Error{Args: args, Code: 1, Stderr: "句柄无效。 错误代码： ERROR_INVALID_HANDLE"}
+		}
+		if f.failSession {
+			return errors.New("iptables failed")
+		}
 	}
 	f.observe(args)
 	return nil
+}
+
+func between(s, start, end string) string {
+	i := strings.Index(s, start)
+	if i < 0 {
+		return ""
+	}
+	s = s[i+len(start):]
+	j := strings.Index(s, end)
+	if j < 0 {
+		return ""
+	}
+	return s[:j]
 }
 
 // observe updates the fake's view of containers, networks, volumes and images
@@ -198,7 +240,17 @@ func (f *fakeWSLC) remember(args []string) {
 	})
 }
 
-var hashRE = regexp.MustCompile(`config-hash=[0-9a-f]{64}`)
+var (
+	hashRE  = regexp.MustCompile(`config-hash=[0-9a-f]{64}`)
+	nonceRE = regexp.MustCompile(`_wcg_nonce='[0-9a-f]+-[0-9]+'`)
+)
+
+// scrub makes command output stable: config hashes embed absolute paths, and
+// each session invocation carries a random nonce.
+func scrub(s string) string {
+	s = hashRE.ReplaceAllString(s, "config-hash=<hash>")
+	return nonceRE.ReplaceAllString(s, `_wcg_nonce='<nonce>'`)
+}
 
 // mutations returns recorded calls that change state (queries filtered out).
 func (f *fakeWSLC) mutations() string {
@@ -213,8 +265,7 @@ func (f *fakeWSLC) mutations() string {
 		}
 		b.WriteString(c + "\n")
 	}
-	// Hashes embed absolute paths of the checkout; keep golden files portable.
-	return hashRE.ReplaceAllString(b.String(), "config-hash=<hash>")
+	return scrub(b.String())
 }
 
 // container builds a list entry carrying compose labels.
@@ -226,6 +277,14 @@ func container(project, service string, n int, hash string, running bool) map[st
 	l := (labels.Meta{Project: project}).Container(service, n, hash)
 	return map[string]any{"Id": fmt.Sprintf("%s-%d", service, n), "Name": fmt.Sprintf("%s-%s-%d", project, service, n),
 		"Image": "img", "State": state, "Labels": l}
+}
+
+// hostGatewayContainer is container plus the label written when rules may
+// have been programmed.
+func hostGatewayContainer(project, service string, n int, hash string, running bool) map[string]any {
+	c := container(project, service, n, hash, running)
+	c["Labels"].(map[string]string)[labels.HostGateway] = "v1"
+	return c
 }
 
 type harness struct {

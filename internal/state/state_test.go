@@ -78,6 +78,63 @@ func TestPrepareGeneratedAndExternal(t *testing.T) {
 	}
 }
 
+func TestGatewayMarker(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "p")
+	on, err := GatewayMarked(dir)
+	if err != nil || on {
+		t.Fatalf("missing dir: %v %v", on, err)
+	}
+	if err := MarkGateway(dir); err != nil {
+		t.Fatal(err)
+	}
+	on, err = GatewayMarked(dir)
+	if err != nil || !on {
+		t.Fatalf("marked: %v %v", on, err)
+	}
+	if err := Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	on, err = GatewayMarked(dir)
+	if err != nil || on {
+		t.Fatalf("removed marker: %v %v", on, err)
+	}
+}
+
+func TestRemoveKeepingGateway(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "p")
+	if err := os.MkdirAll(filepath.Join(dir, "secrets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secrets", "x"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveKeepingGateway(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("dir without a marker should be removed: %v", err)
+	}
+	if err := MarkGateway(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "secrets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secrets", "x"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveKeepingGateway(dir); err != nil {
+		t.Fatal(err)
+	}
+	on, err := GatewayMarked(dir)
+	if err != nil || !on {
+		t.Fatalf("marker kept: %v %v", on, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "secrets")); !os.IsNotExist(err) {
+		t.Fatalf("secrets left behind: %v", err)
+	}
+}
+
 func TestPrepareMissingFile(t *testing.T) {
 	app := types.ServiceConfig{Name: "app"}
 	app.Secrets = []types.ServiceSecretConfig{types.ServiceSecretConfig(types.FileReferenceConfig{Source: "tok"})}

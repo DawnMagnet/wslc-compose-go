@@ -287,6 +287,19 @@ func uniqueTargets(service string, s types.ServiceConfig, mounts []Mount) error 
 	return nil
 }
 
+func makeRemovable(root string) {
+	if runtime.GOOS != "windows" || root == "" {
+		return
+	}
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d == nil || d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		_ = os.Chmod(path, 0o700)
+		return nil
+	})
+}
+
 func sanitize(name string) string {
 	var b strings.Builder
 	for _, r := range name {
@@ -302,6 +315,67 @@ func sanitize(name string) string {
 	return b.String()
 }
 
+// gatewayMarkerName records that host-gateway iptables rules were programmed
+// and still need to be removed. It lives in the project state directory,
+// next to generated secrets, and is deleted with that directory.
+const gatewayMarkerName = "host-gateway"
+
+// MarkGateway records that this project's host-gateway rules were programmed.
+func MarkGateway(dir string) error {
+	if dir == "" {
+		return fmt.Errorf("state dir is empty")
+	}
+	return writeAtomic(filepath.Join(dir, gatewayMarkerName), []byte("v1\n"), 0o644)
+}
+
+// GatewayMarked reports whether MarkGateway has been called and the marker
+// has not been removed. A missing directory is not an error.
+func GatewayMarked(dir string) (bool, error) {
+	if dir == "" {
+		return false, nil
+	}
+	_, err := os.Lstat(filepath.Join(dir, gatewayMarkerName))
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// RemoveKeepingGateway deletes the project state directory, but leaves the
+// directory in place with the host-gateway marker when that marker exists.
+// up's rollback uses this so a failed install does not forget that session
+// rules may already be installed.
+func RemoveKeepingGateway(dir string) error {
+	marked, err := GatewayMarked(dir)
+	if err != nil {
+		return err
+	}
+	if !marked {
+		return Remove(dir)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if e.Name() == gatewayMarkerName {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		makeRemovable(path)
+		if err := os.RemoveAll(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 // Remove deletes the project state directory. A missing directory is not an error.
 // On Windows, read-only files are made removable first. Symlinks are left
 // alone so a link is not followed into another tree.
@@ -309,15 +383,7 @@ func Remove(dir string) error {
 	if dir == "" {
 		return nil
 	}
-	if runtime.GOOS == "windows" {
-		_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-			if err != nil || d == nil || d.Type()&os.ModeSymlink != 0 {
-				return nil
-			}
-			_ = os.Chmod(path, 0o700)
-			return nil
-		})
-	}
+	makeRemovable(dir)
 	err := os.RemoveAll(dir)
 	if os.IsNotExist(err) {
 		return nil

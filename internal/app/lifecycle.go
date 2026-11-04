@@ -48,7 +48,24 @@ func (a *App) Down(ctx context.Context, o DownOptions) error {
 		a.infof("WARN Found orphan containers %v; use --remove-orphans to remove them", orphans)
 	}
 	sortContainers(targets, svcOrder)
-	gateway := projectUsesGateway(p) || sawHostGateway(all)
+	programmed, err := a.gatewayProgrammed(p.Name)
+	if err != nil {
+		return err
+	}
+	// On 3.0.3 the cleanup script is idempotent, so run it whenever the
+	// compose file uses host-gateway, a container is labeled, or the marker
+	// says rules were programmed. Skip only when none of those are true: an
+	// empty down of a project that does not use host-gateway makes no
+	// session call. An older or unknown wslc cannot run the script; keep
+	// the marker instead of deleting the only record that rules may exist.
+	keepMarker := false
+	needCleanup := false
+	if programmed && !a.eng.HostGateway {
+		a.infof("WARN host-gateway: rules may still be installed, but this wslc cannot run session cleanup (needs %s); keeping the marker. Run down again after upgrading to wslc 3.0.3 to remove the leftover rules", wslc.VerHostGateway)
+		keepMarker = true
+	} else if a.eng.HostGateway && (projectUsesGateway(p) || programmed || sawHostGateway(all)) {
+		needCleanup = true
+	}
 	for _, c := range targets {
 		a.infof("Container %s  Removing", c.Name)
 		if c.Running() {
@@ -61,9 +78,11 @@ func (a *App) Down(ctx context.Context, o DownOptions) error {
 		}
 	}
 	var errs []error
-	if gateway {
+	var cleanupErr error
+	if needCleanup {
 		if err := a.reconcileGateway(ctx, p, true); err != nil {
 			a.infof("WARN host-gateway cleanup: %v", err)
+			cleanupErr = err
 			errs = append(errs, err)
 		}
 	}
@@ -72,6 +91,13 @@ func (a *App) Down(ctx context.Context, o DownOptions) error {
 	}
 	if err := a.removeState(p.Name); err != nil {
 		errs = append(errs, err)
+	}
+	// Containers and the state directory are already gone. Put the marker
+	// back when cleanup failed, or when this wslc could not attempt it.
+	if cleanupErr != nil || keepMarker {
+		if err := a.noteGatewayProgrammed(p.Name); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	return errors.Join(errs...)
 }
